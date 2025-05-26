@@ -11,7 +11,7 @@
 詳細: [研究会Webページ](https://www.ipsj.or.jp/kenkyukai/event/mus143slp156.html)
 
 ## 質問
-事前に[Google Forms](https://docs.google.com/forms/d/1pVKss5P4kh5-NQc-qp5K_dDA5_sxe0OUBAH18Nvzzew/edit?hl=ja)にいただいた質問には当日回答させていただきます．また，時間の許す限り，当日その場での質問も受け付けます．
+事前に[Google Forms](https://docs.google.com/forms/d/e/1FAIpQLSevWKjBdtT1dqIzYNn1mQ26iL_zHUBvf3z-5xwVvdwPGpIncw/viewform?usp=header)にいただいた質問には当日回答させていただきます．また，時間の許す限り，当日その場での質問も受け付けます．
 
 ## Demo
 
