@@ -13,6 +13,21 @@
 ## 質問
 事前に[Google Forms](https://docs.google.com/forms/d/e/1FAIpQLSevWKjBdtT1dqIzYNn1mQ26iL_zHUBvf3z-5xwVvdwPGpIncw/viewform?usp=header)にいただいた質問には当日回答させていただきます．また，時間の許す限り，当日その場での質問も受け付けます．
 
+> demo2では、どのようにLlamaForSpeechLM-Instruct - Built with Llamaの事前学習モデルを行っていますか。詳細に教えていただきたいです。
+
+ご質問ありがとうございます．[demo2.py](demo2.py)を用いて，下記の手順で事前学習を行っています．なお，学習にはNVIDIA RTX A6000 48GB VRAM GPUを1基用いました．
+1. `sh scripts/download_clotho.sh`でClotho audio captioningデータセットをダウンロード
+1. Whisper encoderとLlama 3.2 1Bを[2層MLPのadapter](demo2.py#L27)で接続．事前学習およびinstruction tuningを通して，WhisperおよびLlamaのパラメータを凍結し，adapterのみ更新
+1. [train関数](demo2.py#L421)を用いて，LibrispeechでのASRおよびClothoでのaudio captioningで事前学習
+1. [generate_data関数](demo2.py#L526)を用いて，[VITS](https://huggingface.co/kakao-enterprise/vits-vctk)でテキストベースのalpacaデータセットにおける入力テキストを音声合成し，音声入力の[alpacaデータセット](https://huggingface.co/datasets/ryota-komatsu/spoken-alpaca)を作成
+1. [finetune関数](demo2.py#L565)を用いて，作成したalpacaデータセットでcross-modal instruction tuning
+
+## Setup
+
+```shell
+pip install -r requirements.txt
+```
+
 ## Demo
 
 ### Phi-4-Multimodalで音声翻訳
