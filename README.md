@@ -11,7 +11,6 @@
 詳細: [研究会Webページ](https://www.ipsj.or.jp/kenkyukai/event/mus143slp156.html)
 
 ## 質問
-事前に[Google Forms](https://docs.google.com/forms/d/e/1FAIpQLSevWKjBdtT1dqIzYNn1mQ26iL_zHUBvf3z-5xwVvdwPGpIncw/viewform?usp=header)にいただいた質問には当日回答させていただきます．また，時間の許す限り，当日その場での質問も受け付けます．
 
 > demo2では、どのようにLlamaForSpeechLM-Instruct - Built with Llamaの事前学習モデルを行っていますか。詳細に教えていただきたいです。
 
