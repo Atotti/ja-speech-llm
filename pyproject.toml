@@ -3,5 +3,24 @@ name = "ayu-slp2025"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.9"
-dependencies = []
+requires-python = ">=3.12"
+dependencies = [
+    "accelerate>=1.12.0",
+    "backoff>=2.2.1",
+    "datasets==3.6.0",
+    "evaluate>=0.4.6",
+    "jiwer",
+    "librosa>=0.11.0",
+    "pandas>=2.3.3",
+    "peft>=0.18.1",
+    "soundfile>=0.13.1",
+    "tensorboard>=2.20.0",
+    "torch==2.5.1",
+    "torchaudio==2.5.1",
+    "tqdm>=4.67.1",
+    "transformers==4.51.0",
+    "wandb>=0.23.1",
+]
+
+[tool.uv.sources]
+jiwer = { git = "https://github.com/jitsi/jiwer.git", rev = "c1b0d5e005431f5ce4fa6797f48639a8ccaa5042" }
