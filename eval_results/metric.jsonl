@@ -1,0 +1,2 @@
+{"model": "/groups/gch51701/Team031/GitHub/ayu-slp2025/models/LlamaForSpeechLM-ja-20260110-221600", "dataset": "japanese-asr/ja_asr.jsut_basic5000", "dataset_config": null, "dataset_split": "test", "cer_norm": 669.9722695135642, "cer_raw": 723.0580589786034, "wer_norm": 100.0, "wer_raw": 105.89999999999999}
+{"model": "models/LlamaForSpeechLM-ja-20260110-221600", "dataset": "japanese-asr/ja_asr.jsut_basic5000", "dataset_config": null, "dataset_split": "test", "cer_norm": 14.647347017671681, "cer_raw": 18.402032711394494, "wer_norm": 77.12, "wer_raw": 97.26}

@@ -4,6 +4,7 @@ import os
 import argparse
 
 import torch
+import torchaudio
 import pandas as pd
 from transformers import AutoProcessor, AutoTokenizer
 from transformers.models.whisper.english_normalizer import BasicTextNormalizer
@@ -12,6 +13,15 @@ from evaluate import load
 from tqdm import tqdm
 
 from demo2_ja import LlamaForSpeechLM
+
+
+def resample_audio(audio_array, orig_sr: int, target_sr: int = 16000):
+    """Resample audio to target sampling rate."""
+    if orig_sr == target_sr:
+        return audio_array
+    waveform = torch.tensor(audio_array).unsqueeze(0).float()
+    resampled = torchaudio.functional.resample(waveform, orig_sr, target_sr)
+    return resampled.squeeze(0).numpy()
 
 pretty_dataset_names = {
     "japanese-asr/ja_asr.jsut_basic5000": "JSUT Basic 5000",
@@ -31,8 +41,10 @@ def run_inference(
     encoder_processor: AutoProcessor,
     decoder_processor: AutoTokenizer,
     audio_samples: list,
+    references: list[str] = None,
     batch_size: int = 8,
     max_length: int = 256,
+    verbose: bool = True,
 ) -> list[str]:
     """Run batch inference on audio samples."""
     prompt = "### 指示:\n音声を書き起こしてください。\n\n### 応答:\n"
@@ -41,15 +53,19 @@ def run_inference(
     for i in tqdm(range(0, len(audio_samples), batch_size), desc="Inference"):
         batch = audio_samples[i : i + batch_size]
 
-        # Prepare encoder inputs (pad to 30 seconds = 3000 mel frames)
+        # Resample audio to 16kHz if needed (JSUT is 48kHz, Whisper expects 16kHz)
+        audio_arrays = []
+        for sample in batch:
+            orig_sr = sample.get("sampling_rate", 16000)
+            resampled = resample_audio(sample["array"], orig_sr, 16000)
+            audio_arrays.append(resampled)
+
+        # Prepare encoder inputs (processor auto-pads to 30 seconds for Whisper)
         encoder_inputs = encoder_processor(
-            [sample["array"] for sample in batch],
+            audio_arrays,
             return_tensors="pt",
             return_attention_mask=True,
             sampling_rate=16000,
-            padding="max_length",
-            max_length=480000,  # 30 seconds * 16000 Hz
-            truncation=True,
         ).to(model.device)
 
         # Prepare decoder inputs
@@ -72,6 +88,17 @@ def run_inference(
 
         batch_preds = decoder_processor.batch_decode(generated_ids, skip_special_tokens=True)
         predictions.extend(batch_preds)
+
+        # Print results during inference
+        if verbose:
+            for j, pred in enumerate(batch_preds):
+                idx = i + j
+                ref = references[idx] if references else "N/A"
+                # Truncate long outputs for display
+                pred_display = pred[:80] + "..." if len(pred) > 80 else pred
+                ref_display = ref[:80] + "..." if len(ref) > 80 else ref
+                print(f"[{idx+1:4d}] Ref: {ref_display}")
+                print(f"       Hyp: {pred_display}")
 
     return predictions
 
@@ -162,15 +189,17 @@ def main():
         # Run inference
         print(f"Running inference on {len(dataset)} samples...")
         audio_samples = dataset[args.column_audio]
+        reference_raw = dataset[args.column_text]
         prediction_raw = run_inference(
             model,
             encoder_processor,
             decoder_processor,
             audio_samples,
+            references=reference_raw,
             batch_size=args.batch,
             max_length=args.max_length,
+            verbose=True,
         )
-        reference_raw = dataset[args.column_text]
         audio_id = [sample["path"] for sample in audio_samples]
 
         # Normalize for Japanese
