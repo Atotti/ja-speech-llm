@@ -105,7 +105,7 @@ class LlamaForSpeechLM(PreTrainedModel):
         input_features: Optional[torch.FloatTensor] = None,
         encoder_attention_mask: Optional[torch.LongTensor] = None,
     ):
-        inputs_embeds = self.decoder.model.embed_tokens(input_ids)
+        inputs_embeds = self.decoder.get_input_embeddings()(input_ids)
 
         if input_features is not None:
             # Audio + text
@@ -452,6 +452,21 @@ def get_lr_schedule(
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_schedule)
 
 
+def _save_checkpoint(model: LlamaForSpeechLM, checkpoint_dir: str, use_lora: bool = False):
+    """Save model checkpoint, handling LoRA if present."""
+    Path(checkpoint_dir).mkdir(parents=True, exist_ok=True)
+
+    if use_lora:
+        # Save adapter, LoRA, and config separately
+        torch.save(model.adapter.state_dict(), f"{checkpoint_dir}/adapter.pt")
+        model.decoder.save_pretrained(f"{checkpoint_dir}/lora")
+        model.config.save_pretrained(checkpoint_dir)
+        print(f"Checkpoint saved (LoRA): {checkpoint_dir}")
+    else:
+        model.save_pretrained(checkpoint_dir)
+        print(f"Checkpoint saved: {checkpoint_dir}")
+
+
 def _train(
     model: LlamaForSpeechLM,
     encoder_processor,
@@ -474,6 +489,7 @@ def _train(
     val_check_interval: int = None,
     start_step: int = 0,
     validate_fn=None,  # Custom validation function (default: validate)
+    use_lora: bool = False,  # Whether to save LoRA checkpoints
 ):
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
 
@@ -494,8 +510,7 @@ def _train(
         lr * 0.1,
     )
 
-    scaler = torch.amp.GradScaler("cuda", init_scale=init_grad_scale)
-
+    # Note: GradScaler is not needed for bfloat16 (same exponent range as float32)
     step = start_step
 
     for epoch in range(1, epoch + 1):
@@ -507,17 +522,14 @@ def _train(
             with torch.amp.autocast("cuda", dtype=torch.bfloat16):
                 loss = model(**batch)
                 loss = loss / grad_accumulation
-            scaler.scale(loss).backward()
+            loss.backward()
 
             if (batch_idx + 1) % grad_accumulation == 0:
                 # gradient clipping
-                scaler.unscale_(optimizer)
                 grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad_norm)
 
                 # update
-                scaler.step(optimizer)
-                scale = scaler.get_scale()
-                scaler.update()
+                optimizer.step()
                 optimizer.zero_grad()
 
                 # update learning rate
@@ -530,7 +542,6 @@ def _train(
                 wandb.log({
                     "train/loss": loss.item(),
                     "train/lr": lr,
-                    "train/scale": scale,
                     "train/grad_norm": grad_norm.item(),
                 }, step=step)
 
@@ -550,9 +561,7 @@ def _train(
                     )
                     # save checkpoint with step number
                     checkpoint_dir = f"{model_dir}-step{step}"
-                    Path(checkpoint_dir).mkdir(parents=True, exist_ok=True)
-                    model.save_pretrained(checkpoint_dir)
-                    print(f"Checkpoint saved: {checkpoint_dir}")
+                    _save_checkpoint(model, checkpoint_dir, use_lora)
 
                     model.train()
                     model.encoder.eval()
@@ -579,9 +588,7 @@ def _train(
 
         # save checkpoint with step number at epoch end
         checkpoint_dir = f"{model_dir}-step{step}"
-        Path(checkpoint_dir).mkdir(parents=True, exist_ok=True)
-        model.save_pretrained(checkpoint_dir)
-        print(f"Checkpoint saved: {checkpoint_dir}")
+        _save_checkpoint(model, checkpoint_dir, use_lora)
 
         if max_steps is not None and step >= target_step:
             break
@@ -1021,20 +1028,39 @@ def finetune(
     max_response_length: int = 2048,
     resume_from: str = None,
     start_step: int = 0,
+    # Decoder training options (mutually exclusive)
+    use_lora: bool = False,
+    unfreeze_decoder: bool = False,
+    # LoRA options (only used if use_lora=True)
+    lora_r: int = 16,
+    lora_alpha: int = 32,
+    lora_dropout: float = 0.05,
+    lora_target_modules: List[str] = None,
 ):
     """
     Finetune adapter on spoken-magpie-ja dataset (audio instructions).
 
-    Note: Only adapter is trained. Encoder and decoder are frozen.
-    For text capability preservation with LoRA, see finetune_lora.py.
+    Training modes:
+        - Default: Adapter only (encoder/decoder frozen)
+        - use_lora=True: Adapter + LoRA (efficient decoder tuning)
+        - unfreeze_decoder=True: Adapter + Full decoder (full fine-tuning)
 
     Args:
         model_id: Pretrained model to finetune from (used when resume_from is None)
-        resume_from: Path to finetune checkpoint to resume from (e.g., "models/LlamaForSpeechLM-ja-Instruct-step1000")
+        resume_from: Path to finetune checkpoint to resume from
         start_step: Step number to resume from. Auto-detected from resume_from path if 0.
+        use_lora: Enable LoRA for decoder fine-tuning (trains adapter + LoRA)
+        unfreeze_decoder: Unfreeze decoder for full fine-tuning (trains adapter + full decoder)
+        lora_r: LoRA rank
+        lora_alpha: LoRA alpha scaling
+        lora_dropout: LoRA dropout
+        lora_target_modules: Target modules for LoRA (default: ["q_proj", "v_proj"])
     """
-    # Determine which model to load
-    load_path = resume_from if resume_from is not None else model_id
+    if use_lora and unfreeze_decoder:
+        raise ValueError("use_lora and unfreeze_decoder are mutually exclusive")
+
+    if lora_target_modules is None:
+        lora_target_modules = ["q_proj", "v_proj"]
 
     # Auto-extract start_step from resume_from path
     if resume_from is not None and start_step == 0:
@@ -1042,6 +1068,15 @@ def finetune(
         if match:
             start_step = int(match.group(1))
             print(f"Auto-detected start_step: {start_step}")
+
+    # Check if resuming from LoRA checkpoint
+    lora_checkpoint_path = None
+    if resume_from is not None:
+        lora_path = Path(resume_from) / "lora"
+        if lora_path.exists():
+            lora_checkpoint_path = lora_path
+            use_lora = True  # Force LoRA mode when resuming from LoRA checkpoint
+            print(f"Detected LoRA checkpoint, enabling LoRA mode")
 
     wandb.init(
         project=wandb_project,
@@ -1053,11 +1088,71 @@ def finetune(
             "max_steps": max_steps,
             "resume_from": resume_from,
             "start_step": start_step,
+            "use_lora": use_lora,
+            "unfreeze_decoder": unfreeze_decoder,
+            "lora_r": lora_r,
+            "lora_alpha": lora_alpha,
         },
     )
 
-    print(f"Loading model from: {load_path}")
-    model = LlamaForSpeechLM.from_pretrained(load_path).cuda()
+    # Load model
+    if resume_from is not None and lora_checkpoint_path is not None:
+        # Resume from LoRA checkpoint: load config + adapter + LoRA separately
+        print(f"Resuming from LoRA checkpoint: {resume_from}")
+        from peft import PeftModel
+
+        config = LlamaForSpeechLMConfig.from_pretrained(resume_from)
+        model = LlamaForSpeechLM(config).cuda()
+        adapter_path = Path(resume_from) / "adapter.pt"
+        model.adapter.load_state_dict(torch.load(adapter_path, weights_only=True))
+        model.decoder = PeftModel.from_pretrained(model.decoder, str(lora_checkpoint_path))
+        print(f"Loaded adapter from {adapter_path}")
+        print(f"Loaded LoRA from {lora_checkpoint_path}")
+    elif resume_from is not None:
+        # Resume from non-LoRA checkpoint
+        print(f"Resuming from checkpoint: {resume_from}")
+        model = LlamaForSpeechLM.from_pretrained(resume_from).cuda()
+        if use_lora:
+            # Apply fresh LoRA to resumed model
+            from peft import LoraConfig, get_peft_model, TaskType
+            lora_config = LoraConfig(
+                task_type=TaskType.CAUSAL_LM,
+                r=lora_r,
+                lora_alpha=lora_alpha,
+                lora_dropout=lora_dropout,
+                target_modules=lora_target_modules,
+            )
+            model.decoder = get_peft_model(model.decoder, lora_config)
+            print("Applied fresh LoRA to resumed model")
+    else:
+        # Load from pretrained model_id
+        print(f"Loading model from: {model_id}")
+        model = LlamaForSpeechLM.from_pretrained(model_id).cuda()
+        if use_lora:
+            from peft import LoraConfig, get_peft_model, TaskType
+            lora_config = LoraConfig(
+                task_type=TaskType.CAUSAL_LM,
+                r=lora_r,
+                lora_alpha=lora_alpha,
+                lora_dropout=lora_dropout,
+                target_modules=lora_target_modules,
+            )
+            model.decoder = get_peft_model(model.decoder, lora_config)
+            # PEFT creates LoRA in float32 by default, convert to bfloat16 to match decoder
+            for name, param in model.decoder.named_parameters():
+                if 'lora_' in name and param.requires_grad:
+                    param.data = param.data.to(torch.bfloat16)
+            print("Applied LoRA to decoder (bfloat16)")
+
+    if use_lora:
+        model.decoder.print_trainable_parameters()
+
+    # Unfreeze decoder for full fine-tuning
+    if unfreeze_decoder:
+        model.decoder.requires_grad_(True)
+        trainable_params = sum(p.numel() for p in model.decoder.parameters() if p.requires_grad)
+        total_params = sum(p.numel() for p in model.decoder.parameters())
+        print(f"Decoder unfrozen: {trainable_params:,} / {total_params:,} params trainable")
 
     encoder_processor = AutoProcessor.from_pretrained(model.config.encoder_id)
     decoder_processor = AutoTokenizer.from_pretrained(model.config.decoder_id)
@@ -1125,6 +1220,7 @@ def finetune(
         model_dir=model_dir,
         validate_fn=validate_finetune,
         start_step=start_step,
+        use_lora=use_lora,
     )
 
     wandb.finish()

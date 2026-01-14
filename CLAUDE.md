@@ -24,9 +24,9 @@ jupyter notebook demo2.ipynb  # Llama + Whisper adapter training
 python demo2.py
 
 # Japanese version: LLM-jp + Whisper-large-v3 + ReazonSpeech
-python -c "from demo2_ja import train; train(max_steps=1000)"  # Training
-python -c "from demo2_ja import eval_pretrained; eval_pretrained()"  # Evaluation
-python demo2_ja.py --audio sample.wav  # Inference demo
+python -c "from demo2_ja import train; train(max_steps=1000)"  # Pretrain (ASR)
+python -c "from demo2_ja import finetune; finetune(model_id='...', max_steps=1000)"  # SFT
+python -c "from demo2_ja import validate; validate(...)"  # Evaluation
 ```
 
 ## Architecture
@@ -48,15 +48,22 @@ python demo2_ja.py --audio sample.wav  # Inference demo
 
 ### Japanese Version (demo2_ja.py)
 
-**LlamaForSpeechLM** (`demo2_ja.py:80`): Japanese Speech LLM:
+**LlamaForSpeechLM** (`demo2_ja.py:65`): Japanese Speech LLM:
 - Whisper-large-v3 encoder (frozen, 1280 dim)
-- LLM-jp-4 8B decoder (frozen, 4096 dim)
+- LLM-jp-4 8B decoder (frozen/LoRA/full, 4096 dim)
 - Adapter module (trainable, 1280→8192→4096)
 
 **Training Pipeline**:
-1. `train()` (`demo2_ja.py:332`) - Pretrain on ReazonSpeech (Japanese ASR)
-2. `validate()` (`demo2_ja.py:445`) - Evaluate WER on ReazonSpeech test
-3. `demo()` (`demo2_ja.py:567`) - Interactive transcription demo
+1. `train()` (`demo2_ja.py:859`) - Pretrain on ReazonSpeech (Japanese ASR)
+2. `finetune()` (`demo2_ja.py:1013`) - SFT on spoken-magpie-ja (instruction following)
+3. `validate()` (`demo2_ja.py:597`) - Evaluate on ReazonSpeech test
+
+**Finetune Modes** (mutually exclusive):
+| Mode | Parameter | Trainable Params |
+|------|-----------|------------------|
+| Adapter only | (default) | ~10M |
+| LoRA | `use_lora=True` | ~18M |
+| Full decoder | `unfreeze_decoder=True` | ~8B |
 
 **Chat Template** (LLM-jp format):
 ```
@@ -79,9 +86,37 @@ python demo2_ja.py --audio sample.wav  # Inference demo
 ### Japanese (demo2_ja.py)
 - **Encoder**: `openai/whisper-large-v3`
 - **Decoder**: `/groups/gch51701/Team031/model/pretrained/v4-8b-decay2m-ipt_v3.1-instruct4` (LLM-jp-4 8B)
-- **Dataset**: `japanese-asr/whisper_transcriptions.reazonspeech.all` (HuggingFace, streaming)
+- **Pretrain Dataset**: `japanese-asr/whisper_transcriptions.reazonspeech.all` (HuggingFace, streaming)
+- **SFT Dataset**: `Atotti/spoken-magpie-ja` (HuggingFace, streaming)
+
+## Job Scripts (ABCI)
+
+```bash
+# Pretrain (ASR)
+qsub -v MODEL_DIR=models/LlamaForSpeechLM-ja scripts/train_ja.sh
+
+# Finetune - Adapter only
+qsub -v MODEL_ID=models/LlamaForSpeechLM-ja-step45000 scripts/finetune_adapter_ja.sh
+
+# Finetune - LoRA
+qsub -v MODEL_ID=models/LlamaForSpeechLM-ja-step45000 scripts/finetune_lora_ja.sh
+
+# Finetune - Full decoder
+qsub -v MODEL_ID=models/LlamaForSpeechLM-ja-step45000 scripts/finetune_full_ja.sh
+
+# Resume (all scripts support RESUME_FROM)
+qsub -v RESUME_FROM=models/LlamaForSpeechLM-ja-Instruct-step1000 scripts/finetune_adapter_ja.sh
+```
+
+## Training Notes
+
+- **Mixed Precision**: BFloat16 (no GradScaler needed)
+- **LoRA dtype**: Explicitly converted to bfloat16 after PEFT initialization
+- **Recommended LR**:
+  - Adapter/LoRA: `1e-3` ~ `1e-4`
+  - Full decoder: `1e-5`
 
 ## Hardware Requirements
 
 - **English (demo2.py)**: NVIDIA RTX A6000 48GB VRAM (or equivalent), CUDA 12.1
-- **Japanese (demo2_ja.py)**: NVIDIA H200 80GB VRAM recommended (LLM-jp 8B requires ~40GB)
+- **Japanese (demo2_ja.py)**: NVIDIA H200 80GB VRAM (LLM-jp 8B + Whisper-large-v3)
