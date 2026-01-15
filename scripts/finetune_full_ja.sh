@@ -3,7 +3,7 @@
 #PBS -q rt_HG
 #PBS -N sft-full
 #PBS -l select=1:ncpus=24:ngpus=1
-#PBS -l walltime=48:00:00
+#PBS -l walltime=168:00:00
 #PBS -o logs/
 #PBS -e logs/
 #PBS -m n
