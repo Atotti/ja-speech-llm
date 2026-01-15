@@ -38,6 +38,11 @@ class Adapter(nn.Module):
         return hidden_states
 
 
+# Audio marker token IDs (using reserved tokens from the end)
+AUDIO_START_TOKEN_ID = 351  # <|reserved_343|>
+AUDIO_END_TOKEN_ID = 350    # <|reserved_342|>
+
+
 class LlamaForSpeechLMConfig(PretrainedConfig):
     """Configuration for LlamaForSpeechLM."""
 
@@ -103,10 +108,24 @@ class LlamaForSpeechLM(PreTrainedModel):
         input_features: Optional[torch.FloatTensor] = None,
         encoder_attention_mask: Optional[torch.LongTensor] = None,
     ):
+        """
+        Embed input_ids and optionally insert audio embeddings between audio markers.
+
+        Expected prompt format:
+            あなたは音声を理解できるAIアシスタントです。
+
+            <|reserved_343|><|reserved_342|>### 指示:
+            {instruction}
+
+            ### 応答:
+            {response}<|eos|>
+
+        Audio embeddings are inserted between <|reserved_343|> and <|reserved_342|>.
+        """
         inputs_embeds = self.decoder.get_input_embeddings()(input_ids)
 
         if input_features is not None:
-            # Audio + text
+            # Audio + text: insert audio embeddings between markers
             encoder_outputs = self.encoder(input_features)
             encoder_hidden_states = encoder_outputs[0]
 
@@ -117,18 +136,44 @@ class LlamaForSpeechLM(PreTrainedModel):
             encoder_hidden_states = self.adapter(encoder_hidden_states)
             encoder_hidden_states = encoder_hidden_states[:, :max_len]
 
-            inputs_embeds = torch.cat((encoder_hidden_states, inputs_embeds), dim=1)
+            # Find audio_start marker position (insert audio AFTER this token)
+            # Format: ... <|reserved_343|><|reserved_342|> ...
+            #                            ^ insert audio here
+            batch_size = input_ids.shape[0]
+            audio_start_positions = (input_ids == AUDIO_START_TOKEN_ID).nonzero(as_tuple=True)[1]
 
-            attention_mask = torch.cat(
-                (
+            if len(audio_start_positions) == batch_size:
+                # All samples have the marker - insert audio after <|reserved_343|>
+                insert_pos = audio_start_positions[0].item() + 1  # Assume same position in batch
+
+                # Split embeddings: [before + audio_start] | [audio_end + rest]
+                embeds_before = inputs_embeds[:, :insert_pos]  # includes <|reserved_343|>
+                embeds_after = inputs_embeds[:, insert_pos:]   # starts with <|reserved_342|>
+
+                # Concatenate: [before + audio_start] + [audio] + [audio_end + rest]
+                inputs_embeds = torch.cat((embeds_before, encoder_hidden_states, embeds_after), dim=1)
+
+                # Build attention mask
+                mask_before = decoder_attention_mask[:, :insert_pos]
+                mask_after = decoder_attention_mask[:, insert_pos:]
+                audio_mask = (
+                    torch.arange(encoder_hidden_states.shape[1], device=decoder_attention_mask.device).unsqueeze(0)
+                    < lengths
+                ).long()
+                attention_mask = torch.cat((mask_before, audio_mask, mask_after), dim=1)
+            else:
+                # Fallback: prepend audio (legacy behavior)
+                inputs_embeds = torch.cat((encoder_hidden_states, inputs_embeds), dim=1)
+                attention_mask = torch.cat(
                     (
-                        torch.arange(encoder_hidden_states.shape[1], device=decoder_attention_mask.device).unsqueeze(0)
-                        < lengths
-                    ).long(),
-                    decoder_attention_mask,
-                ),
-                dim=1,
-            )
+                        (
+                            torch.arange(encoder_hidden_states.shape[1], device=decoder_attention_mask.device).unsqueeze(0)
+                            < lengths
+                        ).long(),
+                        decoder_attention_mask,
+                    ),
+                    dim=1,
+                )
         else:
             # Text-only
             attention_mask = decoder_attention_mask
@@ -157,7 +202,23 @@ class LlamaForSpeechLM(PreTrainedModel):
 
         if labels is None:
             # Auto-generate labels: mask audio positions with -100
-            labels = F.pad(input_ids, (inputs_embeds.shape[1] - input_ids.shape[1], 0), value=-100)
+            audio_len = inputs_embeds.shape[1] - input_ids.shape[1]
+            if audio_len > 0 and input_features is not None:
+                # Find insert position and create labels with -100 for audio
+                audio_start_positions = (input_ids == AUDIO_START_TOKEN_ID).nonzero(as_tuple=True)[1]
+                if len(audio_start_positions) == input_ids.shape[0]:
+                    insert_pos = audio_start_positions[0].item() + 1
+                    labels_before = input_ids[:, :insert_pos]
+                    labels_after = input_ids[:, insert_pos:]
+                    audio_labels = torch.full(
+                        (input_ids.shape[0], audio_len), -100, dtype=input_ids.dtype, device=input_ids.device
+                    )
+                    labels = torch.cat((labels_before, audio_labels, labels_after), dim=1)
+                else:
+                    # Fallback: prepend -100 for audio
+                    labels = F.pad(input_ids, (audio_len, 0), value=-100)
+            else:
+                labels = input_ids
 
         decoder_outputs = self.decoder(inputs_embeds=inputs_embeds, attention_mask=attention_mask, labels=labels)
         return decoder_outputs.loss

@@ -119,7 +119,6 @@ src/speech_llm_ja/
 
 **Dataset Classes** (`src/speech_llm_ja/datasets.py`):
 - `ReazonSpeech` - Japanese ASR (streaming, split_0~7 train, split_8 test)
-- `ClothoJA` - Clotho audio captioning in Japanese
 - `SpokenMagpie` - Audio instruction following
 - `SpokenMultiturnSFT` - Multi-turn spoken conversations
 - `FSD50KCaptioned` - FSD50K with Qwen3-Omni captions

@@ -48,12 +48,12 @@ def finetune(
     lora_target_modules: List[str] = None,
     # Dataset selection and weights
     use_spoken_magpie: bool = True,
-    use_spoken_multiturn: bool = False,
-    use_reazon_sft: bool = False,
-    use_fsd50k_cc0: bool = False,
-    use_fsd50k_ccby: bool = False,
-    use_librispeech: bool = False,
-    dataset_weights: List[int] = None,  # Weights for enabled datasets (in order above)
+    use_spoken_multiturn: bool = True,
+    use_reazon_sft: bool = True,
+    use_fsd50k_cc0: bool = True,
+    use_fsd50k_ccby: bool = True,
+    use_librispeech: bool = True,
+    dataset_weights: List[int] = None,  # Default: [2, 1, 4, 1, 1, 1] when all enabled
 ):
     """
     Finetune adapter on multiple audio instruction datasets.
@@ -224,8 +224,15 @@ def finetune(
     if not datasets:
         raise ValueError("At least one dataset must be enabled")
 
-    # Use weights or default to equal weights
-    weights = dataset_weights if dataset_weights else [1] * len(datasets)
+    # Use weights or default weights
+    # Default: [3, 1, 4, 1, 1, 1] for [magpie, multiturn, reazon, fsd50k_cc0, fsd50k_ccby, librispeech]
+    default_weights = [3, 1, 4, 1, 1, 1]
+    if dataset_weights:
+        weights = dataset_weights
+    elif len(datasets) == 6:
+        weights = default_weights
+    else:
+        weights = [1] * len(datasets)
     if len(weights) != len(datasets):
         raise ValueError(f"dataset_weights length ({len(weights)}) must match enabled datasets ({len(datasets)})")
 
@@ -236,10 +243,11 @@ def finetune(
     else:
         dataset = InterleavedDataset(datasets, weights)
 
-    # Prompt: distinct from text-only to help model recognize audio input
-    prompt = """以下は、タスクを説明する音声の指示です。要求を適切に満たす応答を書きなさい。
+    # Prompt template for finetune
+    # Audio is inserted between <|reserved_343|> and <|reserved_342|>
+    prompt = """あなたは音声を理解できるAIアシスタントです。
 
-### 指示:
+<|reserved_343|><|reserved_342|>### 指示:
 {}
 
 ### 応答:

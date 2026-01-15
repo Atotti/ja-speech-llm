@@ -6,6 +6,9 @@ import torch
 import torchaudio
 from datasets import load_dataset, interleave_datasets, DownloadConfig
 
+# Instruction for instruction-following tasks (audio IS the instruction)
+IF_INSTRUCTION = "これはタスクを説明する音声の指示です。要求を適切に満たす応答を書きなさい。"
+
 
 class ReazonSpeech(torch.utils.data.IterableDataset):
     """ReazonSpeech ASR dataset (streaming)"""
@@ -69,59 +72,6 @@ class ReazonSpeech(torch.utils.data.IterableDataset):
                 print(f"[decode error] {type(e).__name__}: {e}")
                 continue
 
-
-class ClothoJA(torch.utils.data.IterableDataset):
-    """Clotho-JA dataset from HuggingFace (streaming)."""
-
-    def __init__(
-        self,
-        dataset_id: str = "Atotti/clotho-ja",
-        split: str = "train",
-        max_duration: float = 30.0,
-        max_samples: int = None,
-        skip_samples: int = 0,
-    ):
-        dl_config = DownloadConfig(resume_download=True, max_retries=10)
-        self.dataset = load_dataset(dataset_id, split=split, streaming=True, download_config=dl_config)
-        self.max_duration = max_duration
-        self.max_samples = max_samples
-        self.skip_samples = skip_samples
-
-    def __iter__(self):
-        count = 0
-        skipped = 0
-        for item in self.dataset:
-            # Skip first N samples (for train/val split)
-            if skipped < self.skip_samples:
-                skipped += 1
-                continue
-
-            try:
-                audio_data = item["audio"]
-                wav = audio_data["array"]
-                sr = audio_data["sampling_rate"]
-
-                # duration filter
-                if len(wav) / sr > self.max_duration:
-                    continue
-
-                audio = torch.from_numpy(wav).float()
-                if sr != 16000:
-                    audio = torchaudio.functional.resample(audio, sr, 16000)
-
-                caption_ja = item["text_ja"]
-
-                # Return format: (audio, sr, caption, captions_list)
-                # Using 4-tuple to distinguish from ASR's 6-tuple
-                yield audio.unsqueeze(0), 16000, caption_ja, [caption_ja]
-
-                count += 1
-                if self.max_samples is not None and count >= self.max_samples:
-                    break
-
-            except Exception as e:
-                print(f"[ClothoJA decode error] {type(e).__name__}: {e}")
-                continue
 
 
 class AutoMultiTurn(torch.utils.data.IterableDataset):
@@ -216,7 +166,7 @@ class SpokenMagpie(torch.utils.data.IterableDataset):
                     audio = torchaudio.functional.resample(audio, sr, 16000)
 
                 yield {
-                    "instruction": item["instruction"],
+                    "instruction": IF_INSTRUCTION,  # Audio IS the instruction
                     "response": item["response"],
                     "audio": audio,
                 }
@@ -258,7 +208,7 @@ class SpokenMultiturnSFT(torch.utils.data.IterableDataset):
                         if sr != 16000:
                             audio = torchaudio.functional.resample(audio, sr, 16000)
                         yield {
-                            "instruction": item["q1"],
+                            "instruction": IF_INSTRUCTION,  # Audio IS the instruction
                             "response": item["a1"],
                             "audio": audio,
                         }
@@ -274,10 +224,8 @@ class SpokenMultiturnSFT(torch.utils.data.IterableDataset):
                         audio = torch.from_numpy(wav).float()
                         if sr != 16000:
                             audio = torchaudio.functional.resample(audio, sr, 16000)
-                        # Include previous context in instruction
-                        context = f"前の質問: {item['q1']}\n前の回答: {item['a1']}\n\n現在の質問: {item['q2']}"
                         yield {
-                            "instruction": context,
+                            "instruction": IF_INSTRUCTION,  # Audio IS the instruction
                             "response": item["a2"],
                             "audio": audio,
                         }

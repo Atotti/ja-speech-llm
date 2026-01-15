@@ -1,6 +1,6 @@
 """Validation functions for speech LLM."""
 
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 
 import evaluate
 import torch
@@ -8,7 +8,7 @@ import torchaudio
 import wandb
 from datasets import load_dataset, DownloadConfig
 
-from .datasets import ReazonSpeech, ClothoJA
+from .datasets import ReazonSpeech, FSD50KCaptioned
 
 
 def validate(
@@ -25,87 +25,128 @@ def validate(
 ):
     """Validation for pretrain: compute CER (ASR) and BLEU (AAC)."""
 
-    def get_collate_fn(encoder_processor, decoder_processor, task: str = "asr"):
-        if task == "asr":
-            prompt = """### 指示:
+    model.eval()
+
+    # ASR validation (ReazonSpeech test set)
+    # Audio is inserted between <|reserved_343|> and <|reserved_342|>
+    asr_prompt = """あなたは音声を理解できるAIアシスタントです。
+
+<|reserved_343|><|reserved_342|>### 指示:
 音声を書き起こしてください。
 
 ### 応答:
 """
-        else:  # aac
-            prompt = """### 指示:
-音声の内容を説明してください。
+
+    def asr_collate_fn(batch):
+        encoder_inputs = encoder_processor(
+            [item[0].squeeze(0).numpy() for item in batch],
+            return_tensors="pt",
+            return_attention_mask=True,
+            sampling_rate=16000,
+            device="cuda",
+        ).to("cuda")
+
+        decoder_inputs = decoder_processor(
+            [asr_prompt for _ in batch],
+            padding=True,
+            return_tensors="pt",
+        ).to("cuda")
+
+        refs = [item[2] for item in batch]  # transcript
+
+        return {
+            "input_features": encoder_inputs.input_features,
+            "input_ids": decoder_inputs.input_ids,
+            "encoder_attention_mask": encoder_inputs.attention_mask,
+            "decoder_attention_mask": decoder_inputs.attention_mask,
+            "refs": refs,
+        }
+
+    asr_dataset = ReazonSpeech(split="test", max_duration=30.0)
+    asr_loader = torch.utils.data.DataLoader(asr_dataset, batch_size, collate_fn=asr_collate_fn)
+
+    asr_hyps = []
+    asr_refs = []
+    for batch in asr_loader:
+        generated_ids = model.generate(
+            input_ids=batch["input_ids"],
+            decoder_attention_mask=batch["decoder_attention_mask"],
+            input_features=batch["input_features"],
+            encoder_attention_mask=batch["encoder_attention_mask"],
+            max_length=max_length,
+            do_sample=do_sample,
+            num_beams=num_beams,
+        )
+        asr_hyps += decoder_processor.batch_decode(generated_ids, skip_special_tokens=True)
+        asr_refs += batch["refs"]
+
+        if len(asr_hyps) >= 100:
+            break
+
+    asr_hyps = asr_hyps[:100]
+    asr_refs = asr_refs[:100]
+
+    # AAC validation (FSD50K)
+    # Audio is inserted between <|reserved_343|> and <|reserved_342|>
+    aac_prompt = """あなたは音声を理解できるAIアシスタントです。
+
+<|reserved_343|><|reserved_342|>### 指示:
+音声を説明してください。
 
 ### 応答:
 """
 
-        def collate_fn(
-            batch: List[Tuple[torch.Tensor, int, str, int, int, int] | Tuple[torch.Tensor, int, str, List[str]]],
-        ) -> Dict[str, torch.Tensor]:
-            encoder_inputs = encoder_processor(
-                [item[0].squeeze(0).numpy() for item in batch],
-                return_tensors="pt",
-                return_attention_mask=True,
-                sampling_rate=16000,
-                device="cuda",
-            ).to("cuda")
+    def aac_collate_fn(batch):
+        encoder_inputs = encoder_processor(
+            [item["audio"].numpy() for item in batch],
+            return_tensors="pt",
+            return_attention_mask=True,
+            sampling_rate=16000,
+            device="cuda",
+        ).to("cuda")
 
-            decoder_inputs = decoder_processor(
-                [prompt for item in batch],
-                padding=True,
-                return_tensors="pt",
-            ).to("cuda")
+        decoder_inputs = decoder_processor(
+            [aac_prompt for _ in batch],
+            padding=True,
+            return_tensors="pt",
+        ).to("cuda")
 
-            # ASR: item[2] is transcript, AAC: item[3] is captions list
-            refs = [item[2] if len(item) == 6 else item[3] for item in batch]
+        refs = [item["response"] for item in batch]  # caption
 
-            return {
-                "input_features": encoder_inputs.input_features,
-                "input_ids": decoder_inputs.input_ids,
-                "encoder_attention_mask": encoder_inputs.attention_mask,
-                "decoder_attention_mask": decoder_inputs.attention_mask,
-                "refs": refs,
-            }
+        return {
+            "input_features": encoder_inputs.input_features,
+            "input_ids": decoder_inputs.input_ids,
+            "encoder_attention_mask": encoder_inputs.attention_mask,
+            "decoder_attention_mask": decoder_inputs.attention_mask,
+            "refs": refs,
+        }
 
-        return collate_fn
-
-    def _validate(model, encoder_processor, decoder_processor, loader, num_samples=100):
-        hyps = []
-        refs = []
-
-        for batch in loader:
-            generated_ids = model.generate(
-                input_ids=batch["input_ids"],
-                decoder_attention_mask=batch["decoder_attention_mask"],
-                input_features=batch["input_features"],
-                encoder_attention_mask=batch["encoder_attention_mask"],
-                max_length=max_length,
-                do_sample=do_sample,
-                num_beams=num_beams,
-            )
-            hyps += decoder_processor.batch_decode(generated_ids, skip_special_tokens=True)
-            refs += batch["refs"]
-
-            if len(hyps) >= num_samples:
-                break
-
-        return hyps[:num_samples], refs[:num_samples]
-
-    model.eval()
-
-    # ASR validation (ReazonSpeech test set)
-    asr_dataset = ReazonSpeech(split="test", max_duration=30.0)
-    asr_loader = torch.utils.data.DataLoader(
-        asr_dataset, batch_size, collate_fn=get_collate_fn(encoder_processor, decoder_processor, task="asr")
+    aac_dataset = FSD50KCaptioned(
+        dataset_id="Atotti/fsd50k-ccby-Qwen3-Omni-captioned",
+        max_duration=30.0,
     )
-    asr_hyps, asr_refs = _validate(model, encoder_processor, decoder_processor, asr_loader)
+    aac_loader = torch.utils.data.DataLoader(aac_dataset, batch_size, collate_fn=aac_collate_fn)
 
-    # AAC validation (ClothoJA first N samples from train)
-    aac_dataset = ClothoJA(max_samples=aac_val_samples)
-    aac_loader = torch.utils.data.DataLoader(
-        aac_dataset, batch_size, collate_fn=get_collate_fn(encoder_processor, decoder_processor, task="aac")
-    )
-    aac_hyps, aac_refs = _validate(model, encoder_processor, decoder_processor, aac_loader, num_samples=aac_val_samples)
+    aac_hyps = []
+    aac_refs = []
+    for batch in aac_loader:
+        generated_ids = model.generate(
+            input_ids=batch["input_ids"],
+            decoder_attention_mask=batch["decoder_attention_mask"],
+            input_features=batch["input_features"],
+            encoder_attention_mask=batch["encoder_attention_mask"],
+            max_length=max_length,
+            do_sample=do_sample,
+            num_beams=num_beams,
+        )
+        aac_hyps += decoder_processor.batch_decode(generated_ids, skip_special_tokens=True)
+        aac_refs += batch["refs"]
+
+        if len(aac_hyps) >= aac_val_samples:
+            break
+
+    aac_hyps = aac_hyps[:aac_val_samples]
+    aac_refs = aac_refs[:aac_val_samples]
 
     # Metrics
     cer_evaluator = evaluate.load("cer")
@@ -125,8 +166,7 @@ def validate(
 
     aac_table = wandb.Table(columns=["Reference", "Prediction"])
     for ref, hyp in zip(aac_refs[:10], aac_hyps[:10]):
-        ref_str = ref[0] if isinstance(ref, list) else ref
-        aac_table.add_data(ref_str, hyp)
+        aac_table.add_data(ref, hyp)
     wandb.log({"dev/aac_samples": aac_table}, step=step)
 
 
@@ -146,21 +186,24 @@ def validate_finetune(
     """Validation for finetune: compute loss and generate samples on spoken-magpie-ja."""
     import numpy as np
 
+    from .datasets import IF_INSTRUCTION
+
     model.eval()
 
     # Prompt for generation (without response)
-    gen_prompt = """以下は、タスクを説明する音声の指示です。要求を適切に満たす応答を書きなさい。
+    # Audio is inserted between <|reserved_343|> and <|reserved_342|>
+    gen_prompt = """あなたは音声を理解できるAIアシスタントです。
 
-### 指示:
+<|reserved_343|><|reserved_342|>### 指示:
 {}
 
 ### 応答:
 """
 
     # Prompt for loss computation (with response)
-    loss_prompt = """以下は、タスクを説明する音声の指示です。要求を適切に満たす応答を書きなさい。
+    loss_prompt = """あなたは音声を理解できるAIアシスタントです。
 
-### 指示:
+<|reserved_343|><|reserved_342|>### 指示:
 {}
 
 ### 応答:
@@ -214,7 +257,7 @@ def validate_finetune(
         ).to("cuda")
 
         decoder_inputs = decoder_processor(
-            [loss_prompt.format(item["instruction"], item["response"]) for item in batch],
+            [loss_prompt.format(IF_INSTRUCTION, item["response"]) for item in batch],
             padding=True,
             return_tensors="pt",
         ).to("cuda")
@@ -247,7 +290,7 @@ def validate_finetune(
         ).to("cuda")
 
         decoder_inputs = decoder_processor(
-            [gen_prompt.format(item["instruction"])],
+            [gen_prompt.format(IF_INSTRUCTION)],
             return_tensors="pt",
         ).to("cuda")
 

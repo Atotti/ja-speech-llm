@@ -10,7 +10,7 @@ from tqdm import tqdm
 from transformers import AutoProcessor, AutoTokenizer
 
 from .model import LlamaForSpeechLM, LlamaForSpeechLMConfig
-from .datasets import ReazonSpeech, ClothoJA, InterleavedDataset
+from .datasets import ReazonSpeech, ReazonSpeechSFT, FSD50KCaptioned, InterleavedDataset
 from .validate import validate
 
 
@@ -195,14 +195,19 @@ def train(
     resume_from: str = None,
     start_step: int = 0,
     unfreeze_decoder: bool = False,
+    # Dataset weights
+    asr_weight: int = 1,
+    aac_weight: int = 0,  # Default: ASR only. Set to 1 to enable AAC (FSD50K)
 ):
     """
-    Train adapter on ASR (ReazonSpeech) + AAC (ClothoJA).
+    Train adapter on ASR (ReazonSpeech) + AAC (FSD50K).
 
     Args:
         resume_from: Path to checkpoint to resume from (e.g., "models/LlamaForSpeechLM-ja-step20000")
         start_step: Step number to resume from. max_steps is added to this.
         unfreeze_decoder: If True, unfreeze decoder for full training (~8B params).
+        asr_weight: Weight for ASR dataset (ReazonSpeech). Default: 1.
+        aac_weight: Weight for AAC dataset (FSD50K). Default: 0 (disabled).
     """
     # Initialize wandb
     wandb.init(
@@ -220,6 +225,8 @@ def train(
             "resume_from": resume_from,
             "start_step": start_step,
             "unfreeze_decoder": unfreeze_decoder,
+            "asr_weight": asr_weight,
+            "aac_weight": aac_weight,
         },
     )
 
@@ -250,67 +257,68 @@ def train(
     decoder_processor = AutoTokenizer.from_pretrained(decoder_id)
     decoder_processor.pad_token = decoder_processor.pad_token or decoder_processor.eos_token
 
-    # Interleave ReazonSpeech (ASR) and ClothoJA (AAC)
-    # Skip first 100 samples of ClothoJA (used for validation)
-    # Ratio: ASR 10 : AAC 1
-    asr_dataset = ReazonSpeech(split="train")
-    aac_dataset = ClothoJA(split="train", skip_samples=100, max_duration=30.0)
-    dataset = InterleavedDataset([asr_dataset, aac_dataset], weights=[1, 0])  # ASRとAACの比率を設定
+    # Build dataset: ASR (ReazonSpeech) + AAC (FSD50K)
+    datasets = []
+    weights = []
+    dataset_names = []
 
-    def get_collate_fn(encoder_processor, decoder_processor):
-        asr_prompt = """### 指示:
-音声を書き起こしてください。
+    if asr_weight > 0:
+        datasets.append(ReazonSpeechSFT(split="train"))
+        weights.append(asr_weight)
+        dataset_names.append("asr")
+
+    if aac_weight > 0:
+        datasets.append(FSD50KCaptioned(dataset_id="Atotti/fsd50k-cc0-Qwen3-Omni-captioned"))
+        weights.append(aac_weight)
+        dataset_names.append("aac")
+
+    if not datasets:
+        raise ValueError("At least one of asr_weight or aac_weight must be > 0")
+
+    print(f"Train datasets: {list(zip(dataset_names, weights))}")
+
+    if len(datasets) == 1:
+        dataset = datasets[0]
+    else:
+        dataset = InterleavedDataset(datasets, weights)
+
+    # Prompt template for pretrain
+    # Audio is inserted between <|reserved_343|> and <|reserved_342|>
+    prompt = """あなたは音声を理解できるAIアシスタントです。
+
+<|reserved_343|><|reserved_342|>### 指示:
+{}
 
 ### 応答:
 {}<|eos|>"""
 
-        aac_prompt = """### 指示:
-音声の内容を説明してください。
+    def collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
+        """
+        Args:
+            batch: List of dicts with keys: instruction, response, audio
+        """
+        encoder_inputs = encoder_processor(
+            [item["audio"].numpy() for item in batch],
+            return_tensors="pt",
+            return_attention_mask=True,
+            sampling_rate=16000,
+            device="cuda",
+        ).to("cuda")
 
-### 応答:
-{}<|eos|>"""
+        decoder_inputs = decoder_processor(
+            [prompt.format(item["instruction"], item["response"]) for item in batch],
+            padding=True,
+            return_tensors="pt",
+        ).to("cuda")
 
-        def collate_fn(
-            batch: List[Tuple[torch.Tensor, int, str, int, int, int] | Tuple[torch.Tensor, int, str, List[str]]],
-        ) -> Dict[str, torch.Tensor]:
-            """
-            Args:
-                batch: List of tuples.
-                    ASR: (waveform, sample rate, transcript, speaker ID, chapter ID, utterance ID) - 6 elements
-                    AAC: (waveform, sample rate, caption, captions) - 4 elements
-            """
+        return {
+            "input_features": encoder_inputs.input_features,
+            "input_ids": decoder_inputs.input_ids,
+            "encoder_attention_mask": encoder_inputs.attention_mask,
+            "decoder_attention_mask": decoder_inputs.attention_mask,
+        }
 
-            encoder_inputs = encoder_processor(
-                [item[0].squeeze(0).numpy() for item in batch],
-                return_tensors="pt",
-                return_attention_mask=True,
-                sampling_rate=16000,
-                device="cuda",
-            ).to("cuda")
-
-            # Use different prompts based on task (6-tuple=ASR, 4-tuple=AAC)
-            decoder_inputs = decoder_processor(
-                [
-                    asr_prompt.format(item[2]) if len(item) == 6
-                    else aac_prompt.format(item[2])
-                    for item in batch
-                ],
-                padding=True,
-                return_tensors="pt",
-            ).to("cuda")
-
-            return {
-                "input_features": encoder_inputs.input_features,
-                "input_ids": decoder_inputs.input_ids,
-                "encoder_attention_mask": encoder_inputs.attention_mask,
-                "decoder_attention_mask": decoder_inputs.attention_mask,
-            }
-
-        return collate_fn
-
-    loader = torch.utils.data.DataLoader(
-        dataset, batch_size, collate_fn=get_collate_fn(encoder_processor, decoder_processor)
-    )
+    loader = torch.utils.data.DataLoader(dataset, batch_size, collate_fn=collate_fn)
 
     _train(
         model,

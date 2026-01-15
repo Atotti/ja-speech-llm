@@ -27,9 +27,10 @@ from speech_llm_ja import (
     Adapter,
     LlamaForSpeechLM,
     LlamaForSpeechLMConfig,
+    AUDIO_START_TOKEN_ID,
+    AUDIO_END_TOKEN_ID,
     # Datasets
     ReazonSpeech,
-    ClothoJA,
     AutoMultiTurn,
     SpokenMagpie,
     SpokenMultiturnSFT,
@@ -38,6 +39,7 @@ from speech_llm_ja import (
     ReazonSpeechSFT,
     TextMultiturn,
     InterleavedDataset,
+    IF_INSTRUCTION,
     # Training
     train,
     _train,
@@ -54,9 +56,10 @@ __all__ = [
     "Adapter",
     "LlamaForSpeechLM",
     "LlamaForSpeechLMConfig",
+    "AUDIO_START_TOKEN_ID",
+    "AUDIO_END_TOKEN_ID",
     # Datasets
     "ReazonSpeech",
-    "ClothoJA",
     "AutoMultiTurn",
     "SpokenMagpie",
     "SpokenMultiturnSFT",
@@ -65,6 +68,7 @@ __all__ = [
     "ReazonSpeechSFT",
     "TextMultiturn",
     "InterleavedDataset",
+    "IF_INSTRUCTION",
     # Training
     "train",
     "_train",
