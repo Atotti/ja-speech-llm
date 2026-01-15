@@ -37,7 +37,7 @@ uv run python -c "from demo2_ja import finetune; finetune(model_id='models/Llama
 qsub scripts/train_ja.sh
 
 # 再開
-qsub -v RESUME_FROM=models/LlamaForSpeechLM-ja-20260112-121119-step45000 scripts/train_ja.sh
+qsub -v RESUME_FROM=models/LlamaForSpeechLM-ja-20260112-121119-step90000 scripts/train_ja.sh
 ```
 
 ## fine-tune (Adapter のみ)

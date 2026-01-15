@@ -26,4 +26,4 @@ else
     RESUME_ARG=""
 fi
 
-uv run python -c "from demo2_ja import train; train(${RESUME_ARG} max_steps=1000000, batch_size=32, grad_accumulation=2, warmup_steps=10, val_check_interval=5000, model_dir='models/LlamaForSpeechLM-ja-${TIMESTAMP}')"
+uv run python -c "from demo2_ja import train; train(${RESUME_ARG} lr=1e-4, max_steps=100000, batch_size=32, grad_accumulation=2, warmup_steps=10, val_check_interval=5000, model_dir='models/LlamaForSpeechLM-ja-${TIMESTAMP}')"

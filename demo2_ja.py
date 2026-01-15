@@ -877,6 +877,7 @@ def train(
     wandb_project: str = "speech-llm-ja",
     resume_from: str = None,
     start_step: int = 0,
+    unfreeze_decoder: bool = False,
 ):
     """
     Train adapter on ASR (ReazonSpeech) + AAC (ClothoJA).
@@ -884,6 +885,7 @@ def train(
     Args:
         resume_from: Path to checkpoint to resume from (e.g., "models/LlamaForSpeechLM-ja-step20000")
         start_step: Step number to resume from. max_steps is added to this.
+        unfreeze_decoder: If True, unfreeze decoder for full training (~8B params).
     """
     # Initialize wandb
     wandb.init(
@@ -900,6 +902,7 @@ def train(
             "val_check_interval": val_check_interval,
             "resume_from": resume_from,
             "start_step": start_step,
+            "unfreeze_decoder": unfreeze_decoder,
         },
     )
 
@@ -918,6 +921,13 @@ def train(
     else:
         # Create new model
         model = LlamaForSpeechLM(LlamaForSpeechLMConfig(encoder_id=encoder_id, decoder_id=decoder_id)).cuda()
+
+    # Unfreeze decoder for full training
+    if unfreeze_decoder:
+        model.decoder.requires_grad_(True)
+        trainable_params = sum(p.numel() for p in model.decoder.parameters() if p.requires_grad)
+        total_params = sum(p.numel() for p in model.decoder.parameters())
+        print(f"Decoder unfrozen: {trainable_params:,} / {total_params:,} params trainable")
 
     encoder_processor = AutoProcessor.from_pretrained(encoder_id)
     decoder_processor = AutoTokenizer.from_pretrained(decoder_id)
