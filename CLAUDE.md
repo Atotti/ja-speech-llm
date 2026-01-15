@@ -27,6 +27,9 @@ python demo2.py
 python -c "from demo2_ja import train; train(max_steps=1000)"  # Pretrain (ASR)
 python -c "from demo2_ja import finetune; finetune(model_id='...', max_steps=1000)"  # SFT
 python -c "from demo2_ja import validate; validate(...)"  # Evaluation
+
+# Or import from package directly
+python -c "from speech_llm_ja import train; train(max_steps=1000)"
 ```
 
 ## Architecture
@@ -46,17 +49,30 @@ python -c "from demo2_ja import validate; validate(...)"  # Evaluation
 3. `finetune()` (`demo2.py:565`) - Instruction tuning on synthetic spoken Alpaca
 4. `eval()` - Evaluate on test benchmarks
 
-### Japanese Version (demo2_ja.py)
+### Japanese Version (src/speech_llm_ja/)
 
-**LlamaForSpeechLM** (`demo2_ja.py:65`): Japanese Speech LLM:
+The Japanese implementation is organized as a package under `src/speech_llm_ja/`. The file `demo2_ja.py` serves as a thin wrapper for backward compatibility.
+
+**Package Structure**:
+```
+src/speech_llm_ja/
+├── __init__.py      # Public API exports
+├── model.py         # Adapter, LlamaForSpeechLMConfig, LlamaForSpeechLM
+├── datasets.py      # All dataset classes (10 classes)
+├── train.py         # train(), _train(), get_lr_schedule(), _save_checkpoint()
+├── finetune.py      # finetune()
+└── validate.py      # validate(), validate_finetune()
+```
+
+**LlamaForSpeechLM** (`src/speech_llm_ja/model.py:61`): Japanese Speech LLM:
 - Whisper-large-v3 encoder (frozen, 1280 dim)
 - LLM-jp-4 8B decoder (frozen/LoRA/full, 4096 dim)
 - Adapter module (trainable, 1280→8192→4096)
 
 **Training Pipeline**:
-1. `train()` (`demo2_ja.py:859`) - Pretrain on ReazonSpeech (Japanese ASR)
-2. `finetune()` (`demo2_ja.py:1013`) - SFT on spoken-magpie-ja (instruction following)
-3. `validate()` (`demo2_ja.py:597`) - Evaluate on ReazonSpeech test
+1. `train()` (`src/speech_llm_ja/train.py:176`) - Pretrain on ReazonSpeech (Japanese ASR)
+2. `finetune()` (`src/speech_llm_ja/finetune.py:22`) - SFT on multiple datasets
+3. `validate()` (`src/speech_llm_ja/validate.py:14`) - Evaluate on ReazonSpeech test
 
 **Finetune Modes** (mutually exclusive):
 | Mode | Parameter | Trainable Params |
@@ -83,17 +99,43 @@ python -c "from demo2_ja import validate; validate(...)"  # Evaluation
 - **Pretrained model**: `ryota-komatsu/Llama-for-SpeechLM-Instruct` (HuggingFace)
 - **Datasets**: LibriSpeech (torchaudio), Clotho, spoken-alpaca
 
-### Japanese (demo2_ja.py)
+### Japanese (src/speech_llm_ja/)
 - **Encoder**: `openai/whisper-large-v3`
 - **Decoder**: `/groups/gch51701/Team031/model/pretrained/v4-8b-decay2m-ipt_v3.1-instruct4` (LLM-jp-4 8B)
-- **Pretrain Dataset**: `japanese-asr/whisper_transcriptions.reazonspeech.all` (HuggingFace, streaming)
-- **SFT Dataset**: `Atotti/spoken-magpie-ja` (HuggingFace, streaming)
+
+**Pretrain Datasets**:
+- `japanese-asr/whisper_transcriptions.reazonspeech.all` - Japanese ASR (streaming)
+- `Atotti/clotho-ja` - Audio captioning in Japanese
+
+**SFT Datasets** (configurable in `finetune()`):
+| Dataset | Parameter | Description |
+|---------|-----------|-------------|
+| `Atotti/spoken-magpie-ja` | `use_spoken_magpie=True` | Audio instruction following (default) |
+| `Atotti/spoken-multiturn-sft` | `use_spoken_multiturn=True` | Multi-turn conversations |
+| ReazonSpeech (SFT format) | `use_reazon_sft=True` | Japanese ASR (forgetting prevention) |
+| `Atotti/fsd50k-cc0-Qwen3-Omni-captioned` | `use_fsd50k_cc0=True` | Audio captioning |
+| `Atotti/fsd50k-ccby-Qwen3-Omni-captioned` | `use_fsd50k_ccby=True` | Audio captioning |
+| `openslr/librispeech_asr` | `use_librispeech=True` | English ASR |
+
+**Dataset Classes** (`src/speech_llm_ja/datasets.py`):
+- `ReazonSpeech` - Japanese ASR (streaming, split_0~7 train, split_8 test)
+- `ClothoJA` - Clotho audio captioning in Japanese
+- `SpokenMagpie` - Audio instruction following
+- `SpokenMultiturnSFT` - Multi-turn spoken conversations
+- `FSD50KCaptioned` - FSD50K with Qwen3-Omni captions
+- `LibriSpeechASR` - English ASR
+- `ReazonSpeechSFT` - ReazonSpeech in SFT format
+- `TextMultiturn` - Text-only multi-turn (for capability preservation)
+- `InterleavedDataset` - Interleave multiple datasets with configurable weights
 
 ## Job Scripts (ABCI)
 
 ```bash
 # Pretrain (ASR)
-qsub -v MODEL_DIR=models/LlamaForSpeechLM-ja scripts/train_ja.sh
+qsub scripts/train_ja.sh
+
+# Pretrain with full decoder
+qsub scripts/train_full_ja.sh
 
 # Finetune - Adapter only
 qsub -v MODEL_ID=models/LlamaForSpeechLM-ja-step45000 scripts/finetune_adapter_ja.sh
@@ -119,4 +161,4 @@ qsub -v RESUME_FROM=models/LlamaForSpeechLM-ja-Instruct-step1000 scripts/finetun
 ## Hardware Requirements
 
 - **English (demo2.py)**: NVIDIA RTX A6000 48GB VRAM (or equivalent), CUDA 12.1
-- **Japanese (demo2_ja.py)**: NVIDIA H200 80GB VRAM (LLM-jp 8B + Whisper-large-v3)
+- **Japanese (src/speech_llm_ja/)**: NVIDIA H200 140GB VRAM (LLM-jp 8B + Whisper-large-v3)
