@@ -50,7 +50,7 @@ class LlamaForSpeechLMConfig(PretrainedConfig):
     def __init__(
         self,
         encoder_id: str = "openai/whisper-large-v3",
-        decoder_id: str = "/groups/gch51701/Team031/model/pretrained/v4-8b-decay2m-ipt_v3.1-instruct4",
+        decoder_id: str = "models/v4-8b-decay2m-ipt_v3.1-instruct4",
         adapter_kernel_size: int = 4,
         adapter_linear_bias: bool = False,
         **kwargs,
