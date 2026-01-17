@@ -2,10 +2,11 @@
 
 import re
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import torch
 import wandb
+from accelerate import Accelerator, DataLoaderConfiguration
 from tqdm import tqdm
 from transformers import AutoProcessor, AutoTokenizer
 
@@ -31,18 +32,30 @@ def get_lr_schedule(
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_schedule)
 
 
-def _save_checkpoint(model: LlamaForSpeechLM, checkpoint_dir: str, use_lora: bool = False):
+def _save_checkpoint(
+    model: LlamaForSpeechLM,
+    checkpoint_dir: str,
+    use_lora: bool = False,
+    accelerator: Optional[Accelerator] = None,
+):
     """Save model checkpoint, handling LoRA if present."""
+    # Only save on main process
+    if accelerator is not None and not accelerator.is_main_process:
+        return
+
+    # Unwrap model if using Accelerate
+    unwrapped_model = accelerator.unwrap_model(model) if accelerator else model
+
     Path(checkpoint_dir).mkdir(parents=True, exist_ok=True)
 
     if use_lora:
         # Save adapter, LoRA, and config separately
-        torch.save(model.adapter.state_dict(), f"{checkpoint_dir}/adapter.pt")
-        model.decoder.save_pretrained(f"{checkpoint_dir}/lora")
-        model.config.save_pretrained(checkpoint_dir)
+        torch.save(unwrapped_model.adapter.state_dict(), f"{checkpoint_dir}/adapter.pt")
+        unwrapped_model.decoder.save_pretrained(f"{checkpoint_dir}/lora")
+        unwrapped_model.config.save_pretrained(checkpoint_dir)
         print(f"Checkpoint saved (LoRA): {checkpoint_dir}")
     else:
-        model.save_pretrained(checkpoint_dir)
+        unwrapped_model.save_pretrained(checkpoint_dir)
         print(f"Checkpoint saved: {checkpoint_dir}")
 
 
@@ -69,7 +82,12 @@ def _train(
     start_step: int = 0,
     validate_fn=None,  # Custom validation function (default: validate)
     use_lora: bool = False,  # Whether to save LoRA checkpoints
+    accelerator: Optional[Accelerator] = None,  # Accelerator for multi-GPU
 ):
+    # Use provided accelerator or create a dummy for single-GPU compatibility
+    is_distributed = accelerator is not None
+    is_main_process = not is_distributed or accelerator.is_main_process
+
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
 
     # learning rate scheduler
@@ -89,72 +107,100 @@ def _train(
         lr * 0.1,
     )
 
+    # Prepare with Accelerate if distributed
+    if is_distributed:
+        model, optimizer, loader, lr_scheduler = accelerator.prepare(
+            model, optimizer, loader, lr_scheduler
+        )
+
     # Note: GradScaler is not needed for bfloat16 (same exponent range as float32)
     step = start_step
 
     for epoch in range(1, epoch + 1):
         model.train()
-        model.encoder.eval()
-        model.decoder.eval()
+        # Keep encoder/decoder in eval mode (frozen)
+        unwrapped = accelerator.unwrap_model(model) if is_distributed else model
+        unwrapped.encoder.eval()
+        unwrapped.decoder.eval()
 
-        for batch_idx, batch in enumerate(tqdm(loader, desc=f"epoch {epoch}")):
-            with torch.amp.autocast("cuda", dtype=torch.bfloat16):
+        # Progress bar only on main process
+        loader_iter = tqdm(loader, desc=f"epoch {epoch}", disable=not is_main_process)
+
+        for batch_idx, batch in enumerate(loader_iter):
+            with accelerator.autocast() if is_distributed else torch.amp.autocast("cuda", dtype=torch.bfloat16):
                 loss = model(**batch)
                 loss = loss / grad_accumulation
-            loss.backward()
+
+            if is_distributed:
+                accelerator.backward(loss)
+            else:
+                loss.backward()
 
             if (batch_idx + 1) % grad_accumulation == 0:
                 # gradient clipping
-                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad_norm)
+                if is_distributed:
+                    grad_norm = accelerator.clip_grad_norm_(model.parameters(), clip_grad_norm)
+                else:
+                    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad_norm)
 
                 # update
                 optimizer.step()
                 optimizer.zero_grad()
 
                 # update learning rate
-                lr = lr_scheduler.get_last_lr()[0]
+                current_lr = lr_scheduler.get_last_lr()[0]
                 lr_scheduler.step()
 
                 step += 1
 
-                # wandb log
-                wandb.log({
-                    "train/loss": loss.item(),
-                    "train/lr": lr,
-                    "train/grad_norm": grad_norm.item(),
-                }, step=step)
+                # wandb log (main process only)
+                if is_main_process:
+                    wandb.log({
+                        "train/loss": loss.item(),
+                        "train/lr": current_lr,
+                        "train/grad_norm": grad_norm.item() if hasattr(grad_norm, 'item') else grad_norm,
+                    }, step=step)
 
-                # validation at interval
+                # validation at interval (main process only)
                 if val_check_interval is not None and step % val_check_interval == 0:
-                    _validate_fn = validate_fn or validate
-                    _validate_fn(
-                        model,
-                        encoder_processor,
-                        decoder_processor,
-                        step,
-                        batch_size,
-                        max_length,
-                        do_sample,
-                        num_beams,
-                        data_dir,
-                    )
-                    # save checkpoint with step number
-                    checkpoint_dir = f"{model_dir}-step{step}"
-                    _save_checkpoint(model, checkpoint_dir, use_lora)
+                    if is_main_process:
+                        # Get unwrapped model for validation
+                        eval_model = accelerator.unwrap_model(model) if is_distributed else model
+                        _validate_fn = validate_fn or validate
+                        _validate_fn(
+                            eval_model,
+                            encoder_processor,
+                            decoder_processor,
+                            step,
+                            batch_size,
+                            max_length,
+                            do_sample,
+                            num_beams,
+                            data_dir,
+                        )
+                        # save checkpoint with step number
+                        checkpoint_dir = f"{model_dir}-step{step}"
+                        _save_checkpoint(model, checkpoint_dir, use_lora, accelerator)
+
+                    # Sync all processes after validation
+                    if is_distributed:
+                        accelerator.wait_for_everyone()
 
                     model.train()
-                    model.encoder.eval()
-                    model.decoder.eval()
+                    unwrapped = accelerator.unwrap_model(model) if is_distributed else model
+                    unwrapped.encoder.eval()
+                    unwrapped.decoder.eval()
 
                 # max_steps check (target_step = start_step + max_steps)
                 if max_steps is not None and step >= target_step:
                     break
 
         # validation at epoch end (if val_check_interval is not set)
-        if val_check_interval is None:
+        if val_check_interval is None and is_main_process:
+            eval_model = accelerator.unwrap_model(model) if is_distributed else model
             _validate_fn = validate_fn or validate
             _validate_fn(
-                model,
+                eval_model,
                 encoder_processor,
                 decoder_processor,
                 step,
@@ -166,8 +212,12 @@ def _train(
             )
 
         # save checkpoint with step number at epoch end
-        checkpoint_dir = f"{model_dir}-step{step}"
-        _save_checkpoint(model, checkpoint_dir, use_lora)
+        if is_main_process:
+            checkpoint_dir = f"{model_dir}-step{step}"
+            _save_checkpoint(model, checkpoint_dir, use_lora, accelerator)
+
+        if is_distributed:
+            accelerator.wait_for_everyone()
 
         if max_steps is not None and step >= target_step:
             break
@@ -198,6 +248,8 @@ def train(
     # Dataset weights
     asr_weight: int = 1,
     aac_weight: int = 0,  # Default: ASR only. Set to 1 to enable AAC (FSD50K)
+    # Multi-GPU
+    use_accelerate: bool = False,
 ):
     """
     Train adapter on ASR (ReazonSpeech) + AAC (FSD50K).
@@ -208,32 +260,52 @@ def train(
         unfreeze_decoder: If True, unfreeze decoder for full training (~8B params).
         asr_weight: Weight for ASR dataset (ReazonSpeech). Default: 1.
         aac_weight: Weight for AAC dataset (FSD50K). Default: 0 (disabled).
+        use_accelerate: If True, use HuggingFace Accelerate for multi-GPU training.
     """
-    # Initialize wandb
-    wandb.init(
-        project=wandb_project,
-        config={
-            "encoder_id": encoder_id,
-            "decoder_id": decoder_id,
-            "batch_size": batch_size,
-            "lr": lr,
-            "epoch": epoch,
-            "warmup_steps": warmup_steps,
-            "grad_accumulation": grad_accumulation,
-            "max_steps": max_steps,
-            "val_check_interval": val_check_interval,
-            "resume_from": resume_from,
-            "start_step": start_step,
-            "unfreeze_decoder": unfreeze_decoder,
-            "asr_weight": asr_weight,
-            "aac_weight": aac_weight,
-        },
-    )
+    # Initialize Accelerator for multi-GPU
+    accelerator = None
+    if use_accelerate:
+        # dispatch_batches=False: each process fetches its own batch independently
+        # (required for variable-length audio sequences with different padding sizes)
+        dataloader_config = DataLoaderConfiguration(dispatch_batches=False)
+        accelerator = Accelerator(mixed_precision="bf16", dataloader_config=dataloader_config)
+        is_main_process = accelerator.is_main_process
+    else:
+        is_main_process = True
+
+    # Initialize wandb (main process only)
+    if is_main_process:
+        wandb.init(
+            project=wandb_project,
+            config={
+                "encoder_id": encoder_id,
+                "decoder_id": decoder_id,
+                "batch_size": batch_size,
+                "lr": lr,
+                "epoch": epoch,
+                "warmup_steps": warmup_steps,
+                "grad_accumulation": grad_accumulation,
+                "max_steps": max_steps,
+                "val_check_interval": val_check_interval,
+                "resume_from": resume_from,
+                "start_step": start_step,
+                "unfreeze_decoder": unfreeze_decoder,
+                "asr_weight": asr_weight,
+                "aac_weight": aac_weight,
+                "use_accelerate": use_accelerate,
+                "num_processes": accelerator.num_processes if accelerator else 1,
+            },
+        )
 
     if resume_from is not None:
         # Resume from checkpoint
-        print(f"Resuming from checkpoint: {resume_from}")
-        model = LlamaForSpeechLM.from_pretrained(resume_from).cuda()
+        if is_main_process:
+            print(f"Resuming from checkpoint: {resume_from}")
+        if use_accelerate:
+            # Don't move to cuda - Accelerate handles device placement
+            model = LlamaForSpeechLM.from_pretrained(resume_from)
+        else:
+            model = LlamaForSpeechLM.from_pretrained(resume_from).cuda()
         # Use encoder/decoder IDs from checkpoint
         encoder_id = model.config.encoder_id
         decoder_id = model.config.decoder_id
@@ -241,17 +313,22 @@ def train(
         match = re.search(r"step(\d+)", resume_from)
         if match and start_step == 0:
             start_step = int(match.group(1))
-            print(f"Auto-detected start_step: {start_step}")
+            if is_main_process:
+                print(f"Auto-detected start_step: {start_step}")
     else:
         # Create new model
-        model = LlamaForSpeechLM(LlamaForSpeechLMConfig(encoder_id=encoder_id, decoder_id=decoder_id)).cuda()
+        if use_accelerate:
+            model = LlamaForSpeechLM(LlamaForSpeechLMConfig(encoder_id=encoder_id, decoder_id=decoder_id))
+        else:
+            model = LlamaForSpeechLM(LlamaForSpeechLMConfig(encoder_id=encoder_id, decoder_id=decoder_id)).cuda()
 
     # Unfreeze decoder for full training
     if unfreeze_decoder:
         model.decoder.requires_grad_(True)
         trainable_params = sum(p.numel() for p in model.decoder.parameters() if p.requires_grad)
         total_params = sum(p.numel() for p in model.decoder.parameters())
-        print(f"Decoder unfrozen: {trainable_params:,} / {total_params:,} params trainable")
+        if is_main_process:
+            print(f"Decoder unfrozen: {trainable_params:,} / {total_params:,} params trainable")
 
     encoder_processor = AutoProcessor.from_pretrained(encoder_id)
     decoder_processor = AutoTokenizer.from_pretrained(decoder_id)
@@ -275,7 +352,8 @@ def train(
     if not datasets:
         raise ValueError("At least one of asr_weight or aac_weight must be > 0")
 
-    print(f"Train datasets: {list(zip(dataset_names, weights))}")
+    if is_main_process:
+        print(f"Train datasets: {list(zip(dataset_names, weights))}")
 
     if len(datasets) == 1:
         dataset = datasets[0]
@@ -297,26 +375,32 @@ def train(
         Args:
             batch: List of dicts with keys: instruction, response, audio
         """
+        # Don't move to cuda here - Accelerate handles device placement
         encoder_inputs = encoder_processor(
             [item["audio"].numpy() for item in batch],
             return_tensors="pt",
             return_attention_mask=True,
             sampling_rate=16000,
-            device="cuda",
-        ).to("cuda")
+        )
 
         decoder_inputs = decoder_processor(
             [prompt.format(item["instruction"], item["response"]) for item in batch],
             padding=True,
             return_tensors="pt",
-        ).to("cuda")
+        )
 
-        return {
+        result = {
             "input_features": encoder_inputs.input_features,
             "input_ids": decoder_inputs.input_ids,
             "encoder_attention_mask": encoder_inputs.attention_mask,
             "decoder_attention_mask": decoder_inputs.attention_mask,
         }
+
+        # Move to cuda only for single-GPU (non-Accelerate) mode
+        if not use_accelerate:
+            result = {k: v.cuda() for k, v in result.items()}
+
+        return result
 
     loader = torch.utils.data.DataLoader(dataset, batch_size, collate_fn=collate_fn)
 
@@ -340,6 +424,8 @@ def train(
         max_steps,
         val_check_interval,
         start_step,
+        accelerator=accelerator,
     )
 
-    wandb.finish()
+    if is_main_process:
+        wandb.finish()
