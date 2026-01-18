@@ -141,7 +141,7 @@ def _train(
             "training_data": asdict(training_data_config),
             "validation": asdict(validation_config),
         }
-        print(f"Training config: {config_payload}", flush=True)
+        print(f"Training config: optimizer: {optimizer_config}, training_data: {training_data_config}, validation: {validation_config}", flush=True)
         wandb.config.update(config_payload, allow_val_change=True)
 
     for epoch in range(1, training_data_config.epoch + 1):
@@ -407,6 +407,8 @@ def train(
 ### 応答:
 {}<|eos|>"""
 
+    # collate: 照合する
+    # ref: https://docs.pytorch.org/docs/stable/data.html#working-with-collate-fn
     def collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
         """
         Args:
