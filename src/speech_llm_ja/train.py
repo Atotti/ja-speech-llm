@@ -151,8 +151,8 @@ def _train(
                 # wandb log (main process only)
                 if is_main_process:
                     print(
-                        f"step={step} train_loss={loss.item():.6f} "
-                        f"consumed_samples={consumed_samples} lr={current_lr:.6e}"
+                        f"step={step}|train_loss={loss.item():.6f}|consumed_samples={consumed_samples}|lr={current_lr:.6e}",
+                        flush=True,
                     )
                     wandb.log(
                         {
