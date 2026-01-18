@@ -1,6 +1,7 @@
 """Training functions for speech LLM."""
 
 import re
+from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Dict, List
 
@@ -12,6 +13,33 @@ from transformers import AutoProcessor, AutoTokenizer
 from .model import LlamaForSpeechLM, LlamaForSpeechLMConfig
 from .datasets import ReazonSpeechSFT, FSD50KCaptioned, InterleavedDataset
 from .validate import validate
+
+
+@dataclass
+class OptimizerConfig:
+    lr: float = 1e-3
+    warmup_steps: int = 10
+    init_grad_scale: float = 1e32
+    clip_grad_norm: float = 1.0
+    grad_accumulation: int = 128
+
+
+@dataclass
+class TrainingDataConfig:
+    batch_size: int = 4
+    epoch: int = 1
+    data_dir: str = "data"
+    model_dir: str = "models/LlamaForSpeechLM-ja"
+    max_steps: int = None
+    val_check_interval: int = None
+    start_step: int = 0
+
+
+@dataclass
+class ValidationConfig:
+    max_length: int = 1024
+    do_sample: bool = False
+    num_beams: int = 1
 
 
 def get_lr_schedule(
@@ -65,22 +93,9 @@ def _train(
     encoder_processor,
     decoder_processor,
     loader: torch.utils.data.DataLoader,
-    batch_size: int = 4,
-    lr: float = 1e-3,
-    epoch: int = 1,
-    warmup_steps: int = 10,
-    init_grad_scale: float = 1e32,
-    clip_grad_norm: float = 1.0,
-    grad_accumulation: int = 128,
-    # validation
-    max_length: int = 1024,
-    do_sample: bool = False,
-    num_beams: int = 1,
-    data_dir="data",
-    model_dir="models/LlamaForSpeechLM-ja",
-    max_steps: int = None,
-    val_check_interval: int = None,
-    start_step: int = 0,
+    optimizer_config: OptimizerConfig,
+    training_data_config: TrainingDataConfig,
+    validation_config: ValidationConfig,
     validate_fn=None,  # Custom validation function (default: validate)
     use_lora: bool = False,  # Whether to save LoRA checkpoints
     accelerator: Accelerator = None,  # Accelerator for single/multi-GPU
@@ -89,23 +104,27 @@ def _train(
         raise ValueError("accelerator is required")
     is_main_process = accelerator.is_main_process
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=optimizer_config.lr)
 
     # learning rate scheduler
     # max_steps is additional steps from start_step
-    if max_steps is not None:
-        total_steps = max_steps
-        target_step = start_step + max_steps
+    if training_data_config.max_steps is not None:
+        total_steps = training_data_config.max_steps
+        target_step = training_data_config.start_step + training_data_config.max_steps
     else:
-        total_steps = len(loader) // grad_accumulation * epoch
-        target_step = start_step + total_steps
+        total_steps = (
+            len(loader)
+            // optimizer_config.grad_accumulation
+            * training_data_config.epoch
+        )
+        target_step = training_data_config.start_step + total_steps
 
     lr_scheduler = get_lr_schedule(
         optimizer,
         total_steps,
-        warmup_steps,
-        lr,
-        lr * 0.1,
+        optimizer_config.warmup_steps,
+        optimizer_config.lr,
+        optimizer_config.lr * 0.1,
     )
 
     model, optimizer, loader, lr_scheduler = accelerator.prepare(
@@ -113,9 +132,19 @@ def _train(
     )
 
     # Note: GradScaler is not needed for bfloat16 (same exponent range as float32)
-    step = start_step
+    step = training_data_config.start_step
 
-    for epoch in range(1, epoch + 1):
+    # configなどを記録しておく〜これこそが実験管理〜
+    if is_main_process:
+        config_payload = {
+            "optimizer": asdict(optimizer_config),
+            "training_data": asdict(training_data_config),
+            "validation": asdict(validation_config),
+        }
+        print(f"Training config: {config_payload}", flush=True)
+        wandb.config.update(config_payload, allow_val_change=True)
+
+    for epoch in range(1, training_data_config.epoch + 1):
         model.train()
         # Keep encoder/decoder in eval mode (frozen)
         unwrapped = accelerator.unwrap_model(model)
@@ -125,14 +154,14 @@ def _train(
         for batch_idx, batch in enumerate(loader):
             with accelerator.autocast():
                 loss = model(**batch)
-                loss = loss / grad_accumulation
+                loss = loss / optimizer_config.grad_accumulation
 
             accelerator.backward(loss)
 
-            if (batch_idx + 1) % grad_accumulation == 0:
+            if (batch_idx + 1) % optimizer_config.grad_accumulation == 0:
                 # gradient clipping
                 grad_norm = accelerator.clip_grad_norm_(
-                    model.parameters(), clip_grad_norm
+                    model.parameters(), optimizer_config.clip_grad_norm
                 )
 
                 # update
@@ -145,7 +174,10 @@ def _train(
 
                 step += 1
                 consumed_samples = (
-                    step * batch_size * grad_accumulation * accelerator.num_processes
+                    step
+                    * training_data_config.batch_size
+                    * optimizer_config.grad_accumulation
+                    * accelerator.num_processes
                 )
 
                 # wandb log (main process only)
@@ -168,7 +200,10 @@ def _train(
                     )
 
                 # validation at interval (main process only)
-                if val_check_interval is not None and step % val_check_interval == 0:
+                if (
+                    training_data_config.val_check_interval is not None
+                    and step % training_data_config.val_check_interval == 0
+                ):
                     if is_main_process:
                         # Get unwrapped model for validation
                         eval_model = accelerator.unwrap_model(model)
@@ -178,14 +213,14 @@ def _train(
                             encoder_processor,
                             decoder_processor,
                             step,
-                            batch_size,
-                            max_length,
-                            do_sample,
-                            num_beams,
-                            data_dir,
+                            training_data_config.batch_size,
+                            validation_config.max_length,
+                            validation_config.do_sample,
+                            validation_config.num_beams,
+                            training_data_config.data_dir,
                         )
                         # save checkpoint with step number
-                        checkpoint_dir = f"{model_dir}-step{step}"
+                        checkpoint_dir = f"{training_data_config.model_dir}-step{step}"
                         _save_checkpoint(model, checkpoint_dir, use_lora, accelerator)
 
                     # Sync all processes after validation
@@ -197,11 +232,11 @@ def _train(
                     unwrapped.decoder.eval()
 
                 # max_steps check (target_step = start_step + max_steps)
-                if max_steps is not None and step >= target_step:
+                if training_data_config.max_steps is not None and step >= target_step:
                     break
 
         # validation at epoch end (if val_check_interval is not set)
-        if val_check_interval is None and is_main_process:
+        if training_data_config.val_check_interval is None and is_main_process:
             eval_model = accelerator.unwrap_model(model)
             _validate_fn = validate_fn or validate
             _validate_fn(
@@ -209,21 +244,21 @@ def _train(
                 encoder_processor,
                 decoder_processor,
                 step,
-                batch_size,
-                max_length,
-                do_sample,
-                num_beams,
-                data_dir,
+                training_data_config.batch_size,
+                validation_config.max_length,
+                validation_config.do_sample,
+                validation_config.num_beams,
+                training_data_config.data_dir,
             )
 
         # save checkpoint with step number at epoch end
         if is_main_process:
-            checkpoint_dir = f"{model_dir}-step{step}"
+            checkpoint_dir = f"{training_data_config.model_dir}-step{step}"
             _save_checkpoint(model, checkpoint_dir, use_lora, accelerator)
 
         accelerator.wait_for_everyone()
 
-        if max_steps is not None and step >= target_step:
+        if training_data_config.max_steps is not None and step >= target_step:
             break
 
 
@@ -402,26 +437,36 @@ def train(
 
     loader = torch.utils.data.DataLoader(dataset, batch_size, collate_fn=collate_fn)
 
+    optimizer_config = OptimizerConfig(
+        lr=lr,
+        warmup_steps=warmup_steps,
+        init_grad_scale=init_grad_scale,
+        clip_grad_norm=clip_grad_norm,
+        grad_accumulation=grad_accumulation,
+    )
+    training_data_config = TrainingDataConfig(
+        batch_size=batch_size,
+        epoch=epoch,
+        data_dir=data_dir,
+        model_dir=model_dir,
+        max_steps=max_steps,
+        val_check_interval=val_check_interval,
+        start_step=start_step,
+    )
+    validation_config = ValidationConfig(
+        max_length=max_length,
+        do_sample=do_sample,
+        num_beams=num_beams,
+    )
+
     _train(
         model,
         encoder_processor,
         decoder_processor,
         loader,
-        batch_size,
-        lr,
-        epoch,
-        warmup_steps,
-        init_grad_scale,
-        clip_grad_norm,
-        grad_accumulation,
-        max_length,
-        do_sample,
-        num_beams,
-        data_dir,
-        model_dir,
-        max_steps,
-        val_check_interval,
-        start_step,
+        optimizer_config,
+        training_data_config,
+        validation_config,
         accelerator=accelerator,
     )
 

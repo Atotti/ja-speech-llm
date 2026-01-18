@@ -18,7 +18,7 @@ from .datasets import (
     LibriSpeechASR,
     InterleavedDataset,
 )
-from .train import _train
+from .train import OptimizerConfig, TrainingDataConfig, ValidationConfig, _train
 from .validate import validate_finetune
 
 
@@ -337,23 +337,33 @@ def finetune(
     # Note: IterableDataset doesn't support shuffle=True, data order depends on dataset
     loader = torch.utils.data.DataLoader(dataset, batch_size, collate_fn=collate_fn)
 
+    optimizer_config = OptimizerConfig(
+        lr=lr,
+        warmup_steps=warmup_steps,
+        init_grad_scale=init_grad_scale,
+        clip_grad_norm=clip_grad_norm,
+        grad_accumulation=grad_accumulation,
+    )
+    training_data_config = TrainingDataConfig(
+        batch_size=batch_size,
+        epoch=epoch,
+        data_dir="data",
+        model_dir=model_dir,
+        max_steps=max_steps,
+        val_check_interval=val_check_interval,
+        start_step=start_step,
+    )
+    validation_config = ValidationConfig()
+
     _train(
         model,
         encoder_processor,
         decoder_processor,
         loader,
-        batch_size,
-        lr,
-        epoch,
-        warmup_steps,
-        init_grad_scale,
-        clip_grad_norm,
-        grad_accumulation,
-        max_steps=max_steps,
-        val_check_interval=val_check_interval,
-        model_dir=model_dir,
+        optimizer_config,
+        training_data_config,
+        validation_config,
         validate_fn=validate_finetune,
-        start_step=start_step,
         use_lora=use_lora,
         accelerator=accelerator,
     )
