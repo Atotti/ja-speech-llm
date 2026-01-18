@@ -14,6 +14,7 @@
 cd $PBS_O_WORKDIR
 
 # ログ用の設定
+export PYTHONUNBUFFERED=1
 JOBID=${PBS_JOBID%%.*}
 mkdir -p ./logs
 LOGFILE=./logs/train-1gpu-$JOBID.out
