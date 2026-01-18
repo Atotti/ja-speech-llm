@@ -35,10 +35,12 @@ def get_lr_schedule(
 def _save_checkpoint(
     model: LlamaForSpeechLM,
     checkpoint_dir: str,
-    accelerator: Accelerator,
     use_lora: bool = False,
+    accelerator: Accelerator = None,
 ):
     """Save model checkpoint, handling LoRA if present."""
+    if accelerator is None:
+        raise ValueError("accelerator is required")
     # Only save on main process
     if not accelerator.is_main_process:
         return
@@ -64,7 +66,6 @@ def _train(
     encoder_processor,
     decoder_processor,
     loader: torch.utils.data.DataLoader,
-    accelerator: Accelerator,  # Accelerator for single/multi-GPU
     batch_size: int = 4,
     lr: float = 1e-3,
     epoch: int = 1,
@@ -83,7 +84,10 @@ def _train(
     start_step: int = 0,
     validate_fn=None,  # Custom validation function (default: validate)
     use_lora: bool = False,  # Whether to save LoRA checkpoints
+    accelerator: Accelerator = None,  # Accelerator for single/multi-GPU
 ):
+    if accelerator is None:
+        raise ValueError("accelerator is required")
     is_main_process = accelerator.is_main_process
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
@@ -229,7 +233,7 @@ def train(
     model_dir="models/LlamaForSpeechLM-ja",
     max_steps: int = None,
     val_check_interval: int = None,
-    wandb_project: str = "speech-llm-ja",
+    wandb_project: str = "speech-llm-ja-harui",
     resume_from: str = None,
     start_step: int = 0,
     unfreeze_decoder: bool = False,

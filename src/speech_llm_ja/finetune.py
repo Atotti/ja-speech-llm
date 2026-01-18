@@ -34,7 +34,7 @@ def finetune(
     grad_accumulation: int = 128,
     max_steps: int = None,
     val_check_interval: int = None,
-    wandb_project: str = "speech-llm-ja-sft",
+    wandb_project: str = "speech-llm-ja-sft-harui",
     max_duration: float = 30.0,
     max_response_length: int = 2048,
     resume_from: str = None,
