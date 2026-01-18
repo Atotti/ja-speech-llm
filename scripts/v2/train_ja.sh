@@ -13,11 +13,13 @@
 
 cd $PBS_O_WORKDIR
 
+# ログ用の設定
 JOBID=${PBS_JOBID%%.*}
 mkdir -p ./logs
 LOGFILE=./logs/train-1gpu-$JOBID.out
 ERRFILE=./logs/train-1gpu-$JOBID.err
 exec > $LOGFILE 2> $ERRFILE
+# ログ用の設定終わり
 
 source /etc/profile.d/modules.sh
 module load cuda/12.4
