@@ -24,11 +24,21 @@ TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 # Usage:
 #   New:    qsub -v MODEL_ID=models/v2/LlamaForSpeechLM-ja-step20000 scripts/v2/finetune_full_ja_8gpu.sh
 #   Resume: qsub -v RESUME_FROM=models/v2/LlamaForSpeechLM-ja-Instruct-Full-step1000 scripts/v2/finetune_full_ja_8gpu.sh
+#   Weights: qsub -v MODEL_ID=...,DATASET_WEIGHTS="3,1,4,1,1,1" scripts/v2/finetune_full_ja_8gpu.sh
 
 echo "Mode: Full decoder - 8 GPU (v2)"
 
-ARGS="--unfreeze-decoder --max-steps 1000000000 --batch-size 1 --grad-accumulation 16 --warmup-steps 100 --val-check-interval 1000 --lr 5e-5"
+ARGS="--unfreeze-decoder --max-steps 1000000000 --batch-size 2 --grad-accumulation 8 --warmup-steps 100 --val-check-interval 1000 --lr 5e-5"
 MODEL_DIR="models/v2/LlamaForSpeechLM-ja-Instruct-Full-${TIMESTAMP}"
+
+# Parse DATASET_WEIGHTS environment variable (convert "3,1,4,1,1,1" to "3 1 4 1 1 1")
+if [ -n "$DATASET_WEIGHTS" ]; then
+    WEIGHTS_SPACED=$(echo "$DATASET_WEIGHTS" | tr ',' ' ')
+    ARGS="$ARGS --dataset-weights $WEIGHTS_SPACED"
+    echo "Dataset weights: $WEIGHTS_SPACED"
+else
+    echo "Dataset weights: default"
+fi
 
 if [ -n "$RESUME_FROM" ]; then
     echo "Resuming from: $RESUME_FROM"

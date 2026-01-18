@@ -19,6 +19,11 @@ module load cudnn/9.5
 
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 
+# Usage:
+#   New:        qsub scripts/v2/train_ja_8gpu.sh
+#   Resume:     qsub -v RESUME_FROM=models/v2/LlamaForSpeechLM-ja-step20000 scripts/v2/train_ja_8gpu.sh
+#   Kimi-Audio: qsub -v ENCODER_ID=Atotti/Kimi-Audio-Whisper-Encoder scripts/v2/train_ja_8gpu.sh
+
 # Arguments for accelerate launch
 ARGS="--max-steps 1000000000 --batch-size 4 --grad-accumulation 4 --warmup-steps 10 --val-check-interval 5000 --lr 1e-4"
 
@@ -31,6 +36,14 @@ if [ -n "$RESUME_FROM" ]; then
 else
     echo "Starting new training"
     ARGS="$ARGS --model-dir $MODEL_DIR"
+fi
+
+# Add encoder_id if ENCODER_ID is set
+if [ -n "$ENCODER_ID" ]; then
+    echo "Using encoder: $ENCODER_ID"
+    ARGS="$ARGS --encoder-id $ENCODER_ID"
+else
+    echo "Using default encoder: openai/whisper-large-v3"
 fi
 
 echo "Mode: 8-GPU training with Accelerate"

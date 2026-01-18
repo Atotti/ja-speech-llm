@@ -16,6 +16,7 @@ from .datasets import (
     ReazonSpeechSFT,
     FSD50KCaptioned,
     LibriSpeechASR,
+    TextMultiturn,
     InterleavedDataset,
 )
 from .train import _train
@@ -23,8 +24,11 @@ from .validate import validate_finetune
 
 
 def finetune(
-    model_id="models/LlamaForSpeechLM-ja",
+    model_id: str = None,  # Pretrained checkpoint path (None to create fresh model)
     model_dir="models/LlamaForSpeechLM-ja-Instruct",
+    # For fresh model creation (used when model_id is None)
+    encoder_id: str = "openai/whisper-large-v3",
+    decoder_id: str = "/groups/gch51701/Team031/model/pretrained/v4-8b-decay2m-ipt_v3.1-instruct4",
     batch_size: int = 4,
     lr: float = 1e-3,
     epoch: int = 5,
@@ -54,7 +58,8 @@ def finetune(
     use_fsd50k_cc0: bool = True,
     use_fsd50k_ccby: bool = True,
     use_librispeech: bool = True,
-    dataset_weights: List[int] = None,  # Default: [2, 1, 4, 1, 1, 1] when all enabled
+    use_text_multiturn: bool = False,  # Text-only dataset for capability preservation
+    dataset_weights: List[int] = None,  # Default: [3, 1, 4, 1, 1, 1, 0] when all enabled
     # Multi-GPU
     use_accelerate: bool = False,
 ):
@@ -73,6 +78,7 @@ def finetune(
         - fsd50k_cc0: Atotti/fsd50k-cc0-Qwen3-Omni-captioned (audio captioning)
         - fsd50k_ccby: Atotti/fsd50k-ccby-Qwen3-Omni-captioned (audio captioning)
         - librispeech: openslr/librispeech_asr (English ASR)
+        - text_multiturn: kanhatakeyama/ramdom-to-fixed-multiturn-Calm3 (text-only, capability preservation)
 
     Args:
         model_id: Pretrained model to finetune from (used when resume_from is None)
@@ -130,6 +136,8 @@ def finetune(
             project=wandb_project,
             config={
                 "model_id": model_id,
+                "encoder_id": encoder_id,
+                "decoder_id": decoder_id,
                 "batch_size": batch_size,
                 "lr": lr,
                 "max_steps": max_steps,
@@ -188,7 +196,7 @@ def finetune(
             model.decoder = get_peft_model(model.decoder, lora_config)
             if is_main_process:
                 print("Applied fresh LoRA to resumed model")
-    else:
+    elif model_id is not None:
         # Load from pretrained model_id
         if is_main_process:
             print(f"Loading model from: {model_id}")
@@ -206,6 +214,29 @@ def finetune(
             )
             model.decoder = get_peft_model(model.decoder, lora_config)
             # PEFT creates LoRA in float32 by default, convert to bfloat16 to match decoder
+            for name, param in model.decoder.named_parameters():
+                if 'lora_' in name and param.requires_grad:
+                    param.data = param.data.to(torch.bfloat16)
+            if is_main_process:
+                print("Applied LoRA to decoder (bfloat16)")
+    else:
+        # Create fresh model from encoder_id and decoder_id (skip pretrain)
+        if is_main_process:
+            print(f"Creating fresh model: encoder={encoder_id}, decoder={decoder_id}")
+        config = LlamaForSpeechLMConfig(encoder_id=encoder_id, decoder_id=decoder_id)
+        model = LlamaForSpeechLM(config)
+        if not use_accelerate:
+            model = model.cuda()
+        if use_lora:
+            from peft import LoraConfig, get_peft_model, TaskType
+            lora_config = LoraConfig(
+                task_type=TaskType.CAUSAL_LM,
+                r=lora_r,
+                lora_alpha=lora_alpha,
+                lora_dropout=lora_dropout,
+                target_modules=lora_target_modules,
+            )
+            model.decoder = get_peft_model(model.decoder, lora_config)
             for name, param in model.decoder.named_parameters():
                 if 'lora_' in name and param.requires_grad:
                     param.data = param.data.to(torch.bfloat16)
@@ -255,15 +286,19 @@ def finetune(
         datasets.append(LibriSpeechASR(max_duration=max_duration))
         dataset_names.append("librispeech")
 
+    if use_text_multiturn:
+        datasets.append(TextMultiturn(max_response_length=max_response_length))
+        dataset_names.append("text_multiturn")
+
     if not datasets:
         raise ValueError("At least one dataset must be enabled")
 
     # Use weights or default weights
-    # Default: [3, 1, 4, 1, 1, 1] for [magpie, multiturn, reazon, fsd50k_cc0, fsd50k_ccby, librispeech]
-    default_weights = [3, 1, 4, 1, 1, 1]
+    # Default: [3, 1, 4, 1, 1, 1, 0] for [magpie, multiturn, reazon, fsd50k_cc0, fsd50k_ccby, librispeech, text_multiturn]
+    default_weights = [3, 1, 4, 1, 1, 1, 0]
     if dataset_weights:
         weights = dataset_weights
-    elif len(datasets) == 6:
+    elif len(datasets) == 7:
         weights = default_weights
     else:
         weights = [1] * len(datasets)
@@ -278,9 +313,9 @@ def finetune(
     else:
         dataset = InterleavedDataset(datasets, weights)
 
-    # Prompt template for finetune
-    # Audio is inserted between <|reserved_343|> and <|reserved_342|>
-    prompt = """あなたは音声を理解できるAIアシスタントです。
+    # Prompt templates for finetune
+    # Audio samples: audio is inserted between <|reserved_343|> and <|reserved_342|>
+    prompt_audio = """あなたは音声を理解できるAIアシスタントです。
 
 <|reserved_343|><|reserved_342|>### 指示:
 {}
@@ -288,29 +323,100 @@ def finetune(
 ### 応答:
 {}<|eos|>"""
 
+    # Text-only samples: no audio markers
+    prompt_text = """あなたは親切なAIアシスタントです。
+
+### 指示:
+{}
+
+### 応答:
+{}<|eos|>"""
+
     def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
-        # All datasets yield: {"instruction": str, "response": str, "audio": torch.Tensor}
+        # Datasets yield: {"instruction": str, "response": str, "audio": torch.Tensor or None}
         # Audio is already filtered and resampled to 16kHz in each dataset's __iter__
         # Don't move to cuda here - Accelerate handles device placement
-        encoder_inputs = encoder_processor(
-            [item["audio"].numpy() for item in batch],
-            return_tensors="pt",
-            return_attention_mask=True,
-            sampling_rate=16000,
-        )
+        import numpy as np
 
-        decoder_inputs = decoder_processor(
-            [prompt.format(item["instruction"], item["response"]) for item in batch],
-            padding=True,
-            return_tensors="pt",
-        )
+        # Separate audio and text-only samples
+        audio_samples = [item for item in batch if item["audio"] is not None]
+        text_samples = [item for item in batch if item["audio"] is None]
 
-        result = {
-            "input_ids": decoder_inputs.input_ids,
-            "decoder_attention_mask": decoder_inputs.attention_mask,
-            "input_features": encoder_inputs.input_features,
-            "encoder_attention_mask": encoder_inputs.attention_mask,
-        }
+        # Process audio samples
+        if audio_samples:
+            audio_encoder_inputs = encoder_processor(
+                [item["audio"].numpy() for item in audio_samples],
+                return_tensors="pt",
+                return_attention_mask=True,
+                sampling_rate=16000,
+            )
+            audio_decoder_inputs = decoder_processor(
+                [prompt_audio.format(item["instruction"], item["response"]) for item in audio_samples],
+                padding=True,
+                return_tensors="pt",
+            )
+
+        # Process text-only samples (use dummy silent audio for encoder)
+        if text_samples:
+            # Create dummy silent audio (0.1 sec at 16kHz)
+            dummy_audio = np.zeros(1600, dtype=np.float32)
+            text_encoder_inputs = encoder_processor(
+                [dummy_audio for _ in text_samples],
+                return_tensors="pt",
+                return_attention_mask=True,
+                sampling_rate=16000,
+            )
+            text_decoder_inputs = decoder_processor(
+                [prompt_text.format(item["instruction"], item["response"]) for item in text_samples],
+                padding=True,
+                return_tensors="pt",
+            )
+
+        # Combine results (audio first, then text)
+        if audio_samples and text_samples:
+            # Need to pad to same length before concatenating
+            max_input_len = max(audio_decoder_inputs.input_ids.shape[1], text_decoder_inputs.input_ids.shape[1])
+
+            # Pad audio decoder inputs
+            audio_pad_len = max_input_len - audio_decoder_inputs.input_ids.shape[1]
+            if audio_pad_len > 0:
+                audio_decoder_inputs.input_ids = torch.nn.functional.pad(
+                    audio_decoder_inputs.input_ids, (0, audio_pad_len), value=decoder_processor.pad_token_id
+                )
+                audio_decoder_inputs.attention_mask = torch.nn.functional.pad(
+                    audio_decoder_inputs.attention_mask, (0, audio_pad_len), value=0
+                )
+
+            # Pad text decoder inputs
+            text_pad_len = max_input_len - text_decoder_inputs.input_ids.shape[1]
+            if text_pad_len > 0:
+                text_decoder_inputs.input_ids = torch.nn.functional.pad(
+                    text_decoder_inputs.input_ids, (0, text_pad_len), value=decoder_processor.pad_token_id
+                )
+                text_decoder_inputs.attention_mask = torch.nn.functional.pad(
+                    text_decoder_inputs.attention_mask, (0, text_pad_len), value=0
+                )
+
+            result = {
+                "input_ids": torch.cat([audio_decoder_inputs.input_ids, text_decoder_inputs.input_ids], dim=0),
+                "decoder_attention_mask": torch.cat([audio_decoder_inputs.attention_mask, text_decoder_inputs.attention_mask], dim=0),
+                "input_features": torch.cat([audio_encoder_inputs.input_features, text_encoder_inputs.input_features], dim=0),
+                "encoder_attention_mask": torch.cat([audio_encoder_inputs.attention_mask, text_encoder_inputs.attention_mask], dim=0),
+            }
+        elif audio_samples:
+            result = {
+                "input_ids": audio_decoder_inputs.input_ids,
+                "decoder_attention_mask": audio_decoder_inputs.attention_mask,
+                "input_features": audio_encoder_inputs.input_features,
+                "encoder_attention_mask": audio_encoder_inputs.attention_mask,
+            }
+        else:  # text_samples only
+            result = {
+                "input_ids": text_decoder_inputs.input_ids,
+                "decoder_attention_mask": text_decoder_inputs.attention_mask,
+                "input_features": text_encoder_inputs.input_features,
+                "encoder_attention_mask": text_encoder_inputs.attention_mask,
+            }
 
         # Move to cuda only for single-GPU (non-Accelerate) mode
         if not use_accelerate:

@@ -19,8 +19,12 @@ module load cudnn/9.5
 
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 
+# Usage:
+#   New:        qsub scripts/v2/train_ja.sh
+#   Resume:     qsub -v RESUME_FROM=models/v2/LlamaForSpeechLM-ja-step20000 scripts/v2/train_ja.sh
+#   Kimi-Audio: qsub -v ENCODER_ID=Atotti/Kimi-Audio-Whisper-Encoder scripts/v2/train_ja.sh
+
 # Build resume argument if RESUME_FROM is set
-# Usage: qsub -v RESUME_FROM=models/v2/LlamaForSpeechLM-ja-step20000 scripts/v2/train_ja.sh
 if [ -n "$RESUME_FROM" ]; then
     echo "Resuming from: $RESUME_FROM"
     RESUME_ARG="resume_from='${RESUME_FROM}',"
@@ -29,4 +33,13 @@ else
     RESUME_ARG=""
 fi
 
-uv run python -c "from demo2_ja import train; train(${RESUME_ARG} lr=1e-4, max_steps=1000000000, batch_size=32, grad_accumulation=4, warmup_steps=10, val_check_interval=5000, model_dir='models/v2/LlamaForSpeechLM-ja-${TIMESTAMP}')"
+# Build encoder argument if ENCODER_ID is set
+if [ -n "$ENCODER_ID" ]; then
+    echo "Using encoder: $ENCODER_ID"
+    ENCODER_ARG="encoder_id='${ENCODER_ID}',"
+else
+    echo "Using default encoder: openai/whisper-large-v3"
+    ENCODER_ARG=""
+fi
+
+uv run python -c "from demo2_ja import train; train(${RESUME_ARG} ${ENCODER_ARG} lr=1e-4, max_steps=1000000000, batch_size=32, grad_accumulation=4, warmup_steps=10, val_check_interval=5000, model_dir='models/v2/LlamaForSpeechLM-ja-${TIMESTAMP}')"

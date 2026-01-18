@@ -390,29 +390,34 @@ class TextMultiturn(torch.utils.data.IterableDataset):
 
 
 class InterleavedDataset(torch.utils.data.IterableDataset):
-    """Interleave multiple PyTorch IterableDatasets with configurable ratio."""
+    """Interleave multiple PyTorch IterableDatasets with random sampling based on weights.
+
+    Datasets are cycled infinitely - when a dataset exhausts, it restarts from the beginning.
+    This maintains constant weight ratios throughout training.
+    """
 
     def __init__(self, datasets: List[torch.utils.data.IterableDataset], weights: List[int] = None):
         """
         Args:
             datasets: List of IterableDatasets
-            weights: List of integers for sampling ratio (e.g., [10, 1] = 10:1 ratio)
+            weights: List of integers for sampling ratio (e.g., [3, 1] = 75%/25% probability)
         """
         self.datasets = datasets
         self.weights = weights or [1] * len(datasets)
 
     def __iter__(self):
-        iterators = [iter(ds) for ds in self.datasets]
-        exhausted = [False] * len(iterators)
+        import random
 
-        while not all(exhausted):
-            for i, it in enumerate(iterators):
-                if exhausted[i]:
-                    continue
-                # Yield weight[i] samples from dataset i
-                for _ in range(self.weights[i]):
-                    try:
-                        yield next(it)
-                    except StopIteration:
-                        exhausted[i] = True
-                        break
+        iterators = [iter(ds) for ds in self.datasets]
+        indices = list(range(len(iterators)))
+
+        while True:
+            # Randomly sample a dataset based on weights
+            idx = random.choices(indices, weights=self.weights, k=1)[0]
+
+            try:
+                yield next(iterators[idx])
+            except StopIteration:
+                # Dataset exhausted, restart from beginning
+                iterators[idx] = iter(self.datasets[idx])
+                yield next(iterators[idx])
