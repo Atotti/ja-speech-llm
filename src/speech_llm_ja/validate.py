@@ -1,6 +1,5 @@
 """Validation functions for speech LLM."""
 
-from typing import Any, Dict, List
 
 import evaluate
 import torch

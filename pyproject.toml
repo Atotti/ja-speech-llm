@@ -24,3 +24,8 @@ dependencies = [
 
 [tool.uv.sources]
 jiwer = { git = "https://github.com/jitsi/jiwer.git", rev = "c1b0d5e005431f5ce4fa6797f48639a8ccaa5042" }
+
+[dependency-groups]
+dev = [
+    "ruff>=0.14.13",
+]

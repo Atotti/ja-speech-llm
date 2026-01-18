@@ -115,7 +115,7 @@ def finetune(
             lora_checkpoint_path = lora_path
             use_lora = True  # Force LoRA mode when resuming from LoRA checkpoint
             if is_main_process:
-                print(f"Detected LoRA checkpoint, enabling LoRA mode")
+                print("Detected LoRA checkpoint, enabling LoRA mode")
 
     # Initialize wandb (main process only)
     if is_main_process:

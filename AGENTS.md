@@ -13,6 +13,7 @@ This repo is Python-only; there is no build step.
 - `uv run accelerate launch --num_processes 8 scripts/v2/train_accelerate.py`: Multi-GPU training.
 - `uv run accelerate launch --num_processes 1 scripts/v2/finetune_accelerate.py --use-lora`: LoRA finetuning.
 - `bash scripts/v2/train_ja.sh` or `bash scripts/v2/train_ja_8gpu.sh`: PBS job wrappers for single/8 GPU.
+- `UV_CACHE_DIR=/tmp/uv-cache uv run ruff check --fix src`: Auto-fix lint issues after Python changes.
 
 Use `uv run ...` for consistent dependency resolution (Python `>=3.12`).
 

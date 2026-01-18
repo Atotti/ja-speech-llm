@@ -11,7 +11,7 @@ from tqdm import tqdm
 from transformers import AutoProcessor, AutoTokenizer
 
 from .model import LlamaForSpeechLM, LlamaForSpeechLMConfig
-from .datasets import ReazonSpeech, ReazonSpeechSFT, FSD50KCaptioned, InterleavedDataset
+from .datasets import ReazonSpeechSFT, FSD50KCaptioned, InterleavedDataset
 from .validate import validate
 
 
@@ -35,8 +35,8 @@ def get_lr_schedule(
 def _save_checkpoint(
     model: LlamaForSpeechLM,
     checkpoint_dir: str,
-    use_lora: bool = False,
     accelerator: Accelerator,
+    use_lora: bool = False,
 ):
     """Save model checkpoint, handling LoRA if present."""
     # Only save on main process
@@ -64,6 +64,7 @@ def _train(
     encoder_processor,
     decoder_processor,
     loader: torch.utils.data.DataLoader,
+    accelerator: Accelerator,  # Accelerator for single/multi-GPU
     batch_size: int = 4,
     lr: float = 1e-3,
     epoch: int = 1,
@@ -82,7 +83,6 @@ def _train(
     start_step: int = 0,
     validate_fn=None,  # Custom validation function (default: validate)
     use_lora: bool = False,  # Whether to save LoRA checkpoints
-    accelerator: Accelerator,  # Accelerator for single/multi-GPU
 ):
     is_main_process = accelerator.is_main_process
 
