@@ -1,6 +1,12 @@
-from demo2_ja import LlamaForSpeechLM
+import sys
+from pathlib import Path
 
-model_path = "models/LlamaForSpeechLM-ja-Instruct-20260112-223832-step11000"
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+
+from src.speech_llm_ja import LlamaForSpeechLM
+
+model_path = "models/LlamaForSpeechLM-ja-Full-20260115-224911-step155000"
 model = LlamaForSpeechLM.from_pretrained(model_path)
 
 print("=== Model dtype before upload ===")
@@ -9,4 +15,4 @@ print(f"Encoder: {next(model.encoder.parameters()).dtype}")
 print(f"Decoder: {next(model.decoder.parameters()).dtype}")
 
 # Uncomment to upload:
-model.push_to_hub("Atotti/LlamaForSpeechLM-ja-Instruct-20260112-223832-step11000", safe_serialization=True)
+model.push_to_hub("Atotti/LlamaForSpeechLM-ja-Full-20260115-224911-step155000", safe_serialization=True)
