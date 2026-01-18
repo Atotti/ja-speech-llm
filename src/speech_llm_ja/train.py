@@ -7,7 +7,6 @@ from typing import Dict, List
 import torch
 import wandb
 from accelerate import Accelerator, DataLoaderConfiguration
-from tqdm import tqdm
 from transformers import AutoProcessor, AutoTokenizer
 
 from .model import LlamaForSpeechLM, LlamaForSpeechLMConfig
@@ -123,10 +122,7 @@ def _train(
         unwrapped.encoder.eval()
         unwrapped.decoder.eval()
 
-        # Progress bar only on main process
-        loader_iter = tqdm(loader, desc=f"epoch {epoch}", disable=not is_main_process)
-
-        for batch_idx, batch in enumerate(loader_iter):
+        for batch_idx, batch in enumerate(loader):
             with accelerator.autocast():
                 loss = model(**batch)
                 loss = loss / grad_accumulation
@@ -135,7 +131,9 @@ def _train(
 
             if (batch_idx + 1) % grad_accumulation == 0:
                 # gradient clipping
-                grad_norm = accelerator.clip_grad_norm_(model.parameters(), clip_grad_norm)
+                grad_norm = accelerator.clip_grad_norm_(
+                    model.parameters(), clip_grad_norm
+                )
 
                 # update
                 optimizer.step()
@@ -146,14 +144,28 @@ def _train(
                 lr_scheduler.step()
 
                 step += 1
+                consumed_samples = (
+                    step * batch_size * grad_accumulation * accelerator.num_processes
+                )
 
                 # wandb log (main process only)
                 if is_main_process:
-                    wandb.log({
-                        "train/loss": loss.item(),
-                        "train/lr": current_lr,
-                        "train/grad_norm": grad_norm.item() if hasattr(grad_norm, 'item') else grad_norm,
-                    }, step=step)
+                    print(
+                        f"step={step} train_loss={loss.item():.6f} "
+                        f"consumed_samples={consumed_samples} lr={current_lr:.6e}"
+                    )
+                    wandb.log(
+                        {
+                            "train/loss": loss.item(),
+                            "train/consumed_samples": consumed_samples,
+                            "train/global_step": step,
+                            "train/lr": current_lr,
+                            "train/grad_norm": grad_norm.item()
+                            if hasattr(grad_norm, "item")
+                            else grad_norm,
+                        },
+                        step=step,
+                    )
 
                 # validation at interval (main process only)
                 if val_check_interval is not None and step % val_check_interval == 0:
@@ -255,7 +267,9 @@ def train(
     # dispatch_batches=False: each process fetches its own batch independently
     # (required for variable-length audio sequences with different padding sizes)
     dataloader_config = DataLoaderConfiguration(dispatch_batches=False)
-    accelerator = Accelerator(mixed_precision="bf16", dataloader_config=dataloader_config)
+    accelerator = Accelerator(
+        mixed_precision="bf16", dataloader_config=dataloader_config
+    )
     is_main_process = accelerator.is_main_process
 
     # Initialize wandb (main process only)
@@ -298,19 +312,27 @@ def train(
                 print(f"Auto-detected start_step: {start_step}")
     else:
         # Create new model
-        model = LlamaForSpeechLM(LlamaForSpeechLMConfig(encoder_id=encoder_id, decoder_id=decoder_id))
+        model = LlamaForSpeechLM(
+            LlamaForSpeechLMConfig(encoder_id=encoder_id, decoder_id=decoder_id)
+        )
 
     # Unfreeze decoder for full training
     if unfreeze_decoder:
         model.decoder.requires_grad_(True)
-        trainable_params = sum(p.numel() for p in model.decoder.parameters() if p.requires_grad)
+        trainable_params = sum(
+            p.numel() for p in model.decoder.parameters() if p.requires_grad
+        )
         total_params = sum(p.numel() for p in model.decoder.parameters())
         if is_main_process:
-            print(f"Decoder unfrozen: {trainable_params:,} / {total_params:,} params trainable")
+            print(
+                f"Decoder unfrozen: {trainable_params:,} / {total_params:,} params trainable"
+            )
 
     encoder_processor = AutoProcessor.from_pretrained(encoder_id)
     decoder_processor = AutoTokenizer.from_pretrained(decoder_id)
-    decoder_processor.pad_token = decoder_processor.pad_token or decoder_processor.eos_token
+    decoder_processor.pad_token = (
+        decoder_processor.pad_token or decoder_processor.eos_token
+    )
 
     # Build dataset: ASR (ReazonSpeech) + AAC (FSD50K)
     datasets = []
@@ -323,7 +345,9 @@ def train(
         dataset_names.append("asr")
 
     if aac_weight > 0:
-        datasets.append(FSD50KCaptioned(dataset_id="Atotti/fsd50k-cc0-Qwen3-Omni-captioned"))
+        datasets.append(
+            FSD50KCaptioned(dataset_id="Atotti/fsd50k-cc0-Qwen3-Omni-captioned")
+        )
         weights.append(aac_weight)
         dataset_names.append("aac")
 
