@@ -25,8 +25,12 @@ class Adapter(nn.Module):
     ):
         super().__init__()
         self.pool = nn.AvgPool1d(kernel_size)
-        self.linear1 = nn.Linear(encoder_hidden_size, 2 * decoder_hidden_size, bias=bias)
-        self.linear2 = nn.Linear(2 * decoder_hidden_size, decoder_hidden_size, bias=bias)
+        self.linear1 = nn.Linear(
+            encoder_hidden_size, 2 * decoder_hidden_size, bias=bias
+        )
+        self.linear2 = nn.Linear(
+            2 * decoder_hidden_size, decoder_hidden_size, bias=bias
+        )
 
     def forward(self, hidden_states: torch.FloatTensor) -> torch.FloatTensor:
         hidden_states = hidden_states.permute(0, 2, 1)
@@ -40,7 +44,7 @@ class Adapter(nn.Module):
 
 # Audio marker token IDs (using reserved tokens from the end)
 AUDIO_START_TOKEN_ID = 351  # <|reserved_343|>
-AUDIO_END_TOKEN_ID = 350    # <|reserved_342|>
+AUDIO_END_TOKEN_ID = 350  # <|reserved_342|>
 
 
 class LlamaForSpeechLMConfig(PretrainedConfig):
@@ -72,8 +76,12 @@ class LlamaForSpeechLM(PreTrainedModel):
 
     def __init__(self, config: LlamaForSpeechLMConfig):
         super().__init__(config)
-        self.encoder = WhisperForConditionalGeneration.from_pretrained(config.encoder_id).model.encoder
-        self.decoder = AutoModelForCausalLM.from_pretrained(config.decoder_id, torch_dtype=torch.bfloat16)
+        self.encoder = WhisperForConditionalGeneration.from_pretrained(
+            config.encoder_id
+        ).model.encoder
+        self.decoder = AutoModelForCausalLM.from_pretrained(
+            config.decoder_id, torch_dtype=torch.bfloat16
+        )
         self.adapter = Adapter(
             self.encoder.config.d_model,
             self.decoder.config.hidden_size,
@@ -129,7 +137,9 @@ class LlamaForSpeechLM(PreTrainedModel):
             encoder_outputs = self.encoder(input_features)
             encoder_hidden_states = encoder_outputs[0]
 
-            lengths = self.encoder._get_feat_extract_output_lengths(encoder_attention_mask.sum(dim=1, keepdim=True))
+            lengths = self.encoder._get_feat_extract_output_lengths(
+                encoder_attention_mask.sum(dim=1, keepdim=True)
+            )
             lengths = lengths // self.config.adapter_kernel_size
             max_len = lengths.max()
 
@@ -140,24 +150,37 @@ class LlamaForSpeechLM(PreTrainedModel):
             # Format: ... <|reserved_343|><|reserved_342|> ...
             #                            ^ insert audio here
             batch_size = input_ids.shape[0]
-            audio_start_positions = (input_ids == AUDIO_START_TOKEN_ID).nonzero(as_tuple=True)[1]
+            audio_start_positions = (input_ids == AUDIO_START_TOKEN_ID).nonzero(
+                as_tuple=True
+            )[1]
 
             if len(audio_start_positions) == batch_size:
                 # All samples have the marker - insert audio after <|reserved_343|>
-                insert_pos = audio_start_positions[0].item() + 1  # Assume same position in batch
+                insert_pos = (
+                    audio_start_positions[0].item() + 1
+                )  # Assume same position in batch
 
                 # Split embeddings: [before + audio_start] | [audio_end + rest]
-                embeds_before = inputs_embeds[:, :insert_pos]  # includes <|reserved_343|>
-                embeds_after = inputs_embeds[:, insert_pos:]   # starts with <|reserved_342|>
+                embeds_before = inputs_embeds[
+                    :, :insert_pos
+                ]  # includes <|reserved_343|>
+                embeds_after = inputs_embeds[
+                    :, insert_pos:
+                ]  # starts with <|reserved_342|>
 
                 # Concatenate: [before + audio_start] + [audio] + [audio_end + rest]
-                inputs_embeds = torch.cat((embeds_before, encoder_hidden_states, embeds_after), dim=1)
+                inputs_embeds = torch.cat(
+                    (embeds_before, encoder_hidden_states, embeds_after), dim=1
+                )
 
                 # Build attention mask
                 mask_before = decoder_attention_mask[:, :insert_pos]
                 mask_after = decoder_attention_mask[:, insert_pos:]
                 audio_mask = (
-                    torch.arange(encoder_hidden_states.shape[1], device=decoder_attention_mask.device).unsqueeze(0)
+                    torch.arange(
+                        encoder_hidden_states.shape[1],
+                        device=decoder_attention_mask.device,
+                    ).unsqueeze(0)
                     < lengths
                 ).long()
                 attention_mask = torch.cat((mask_before, audio_mask, mask_after), dim=1)
@@ -167,7 +190,10 @@ class LlamaForSpeechLM(PreTrainedModel):
                 attention_mask = torch.cat(
                     (
                         (
-                            torch.arange(encoder_hidden_states.shape[1], device=decoder_attention_mask.device).unsqueeze(0)
+                            torch.arange(
+                                encoder_hidden_states.shape[1],
+                                device=decoder_attention_mask.device,
+                            ).unsqueeze(0)
                             < lengths
                         ).long(),
                         decoder_attention_mask,
@@ -205,22 +231,31 @@ class LlamaForSpeechLM(PreTrainedModel):
             audio_len = inputs_embeds.shape[1] - input_ids.shape[1]
             if audio_len > 0 and input_features is not None:
                 # Find insert position and create labels with -100 for audio
-                audio_start_positions = (input_ids == AUDIO_START_TOKEN_ID).nonzero(as_tuple=True)[1]
+                audio_start_positions = (input_ids == AUDIO_START_TOKEN_ID).nonzero(
+                    as_tuple=True
+                )[1]
                 if len(audio_start_positions) == input_ids.shape[0]:
                     insert_pos = audio_start_positions[0].item() + 1
                     labels_before = input_ids[:, :insert_pos]
                     labels_after = input_ids[:, insert_pos:]
                     audio_labels = torch.full(
-                        (input_ids.shape[0], audio_len), -100, dtype=input_ids.dtype, device=input_ids.device
+                        (input_ids.shape[0], audio_len),
+                        -100,
+                        dtype=input_ids.dtype,
+                        device=input_ids.device,
                     )
-                    labels = torch.cat((labels_before, audio_labels, labels_after), dim=1)
+                    labels = torch.cat(
+                        (labels_before, audio_labels, labels_after), dim=1
+                    )
                 else:
                     # Fallback: prepend -100 for audio
                     labels = F.pad(input_ids, (audio_len, 0), value=-100)
             else:
                 labels = input_ids
 
-        decoder_outputs = self.decoder(inputs_embeds=inputs_embeds, attention_mask=attention_mask, labels=labels)
+        decoder_outputs = self.decoder(
+            inputs_embeds=inputs_embeds, attention_mask=attention_mask, labels=labels
+        )
         return decoder_outputs.loss
 
     @torch.amp.autocast("cuda", dtype=torch.bfloat16)
@@ -237,5 +272,7 @@ class LlamaForSpeechLM(PreTrainedModel):
             input_ids, decoder_attention_mask, input_features, encoder_attention_mask
         )
 
-        generated_ids = self.decoder.generate(inputs_embeds=inputs_embeds, attention_mask=attention_mask, **kwargs)
+        generated_ids = self.decoder.generate(
+            inputs_embeds=inputs_embeds, attention_mask=attention_mask, **kwargs
+        )
         return generated_ids

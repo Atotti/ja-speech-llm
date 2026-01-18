@@ -1,6 +1,5 @@
 """Validation functions for speech LLM."""
 
-
 import evaluate
 import torch
 import torchaudio
@@ -62,7 +61,9 @@ def validate(
         }
 
     asr_dataset = ReazonSpeech(split="test", max_duration=30.0)
-    asr_loader = torch.utils.data.DataLoader(asr_dataset, batch_size, collate_fn=asr_collate_fn)
+    asr_loader = torch.utils.data.DataLoader(
+        asr_dataset, batch_size, collate_fn=asr_collate_fn
+    )
 
     asr_hyps = []
     asr_refs = []
@@ -76,7 +77,9 @@ def validate(
             do_sample=do_sample,
             num_beams=num_beams,
         )
-        asr_hyps += decoder_processor.batch_decode(generated_ids, skip_special_tokens=True)
+        asr_hyps += decoder_processor.batch_decode(
+            generated_ids, skip_special_tokens=True
+        )
         asr_refs += batch["refs"]
 
         if len(asr_hyps) >= 100:
@@ -124,7 +127,9 @@ def validate(
         dataset_id="Atotti/fsd50k-ccby-Qwen3-Omni-captioned",
         max_duration=30.0,
     )
-    aac_loader = torch.utils.data.DataLoader(aac_dataset, batch_size, collate_fn=aac_collate_fn)
+    aac_loader = torch.utils.data.DataLoader(
+        aac_dataset, batch_size, collate_fn=aac_collate_fn
+    )
 
     aac_hyps = []
     aac_refs = []
@@ -138,7 +143,9 @@ def validate(
             do_sample=do_sample,
             num_beams=num_beams,
         )
-        aac_hyps += decoder_processor.batch_decode(generated_ids, skip_special_tokens=True)
+        aac_hyps += decoder_processor.batch_decode(
+            generated_ids, skip_special_tokens=True
+        )
         aac_refs += batch["refs"]
 
         if len(aac_hyps) >= aac_val_samples:
@@ -210,7 +217,9 @@ def validate_finetune(
 
     # Load validation samples (use streaming to avoid caching issues)
     dl_config = DownloadConfig(resume_download=True, max_retries=20)
-    val_dataset = load_dataset(dataset_id, split="train", streaming=True, download_config=dl_config)
+    val_dataset = load_dataset(
+        dataset_id, split="train", streaming=True, download_config=dl_config
+    )
 
     samples = []
     for i, item in enumerate(val_dataset):
@@ -228,11 +237,13 @@ def validate_finetune(
             if sr != 16000:
                 audio = torchaudio.functional.resample(audio, sr, 16000)
 
-            samples.append({
-                "instruction": item["instruction"],
-                "response": item["response"],
-                "audio": audio,
-            })
+            samples.append(
+                {
+                    "instruction": item["instruction"],
+                    "response": item["response"],
+                    "audio": audio,
+                }
+            )
         except Exception as e:
             print(f"[validate_finetune error] {type(e).__name__}: {e}")
             continue
@@ -246,7 +257,7 @@ def validate_finetune(
     num_batches = 0
 
     for i in range(0, len(samples), batch_size):
-        batch = samples[i:i + batch_size]
+        batch = samples[i : i + batch_size]
 
         encoder_inputs = encoder_processor(
             [item["audio"].numpy() for item in batch],
@@ -311,7 +322,11 @@ def validate_finetune(
     # Log to wandb
     table = wandb.Table(columns=["Instruction", "Reference", "Prediction"])
     for inst, ref, hyp in zip(instructions, refs, hyps):
-        table.add_data(inst[:100] + "..." if len(inst) > 100 else inst, ref[:200] + "..." if len(ref) > 200 else ref, hyp[:200] + "..." if len(hyp) > 200 else hyp)
+        table.add_data(
+            inst[:100] + "..." if len(inst) > 100 else inst,
+            ref[:200] + "..." if len(ref) > 200 else ref,
+            hyp[:200] + "..." if len(hyp) > 200 else hyp,
+        )
     wandb.log({"dev/finetune_samples": table}, step=step)
 
     print(f"[validate_finetune] step={step}, loss={avg_loss:.4f}")

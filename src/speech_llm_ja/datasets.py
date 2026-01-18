@@ -7,7 +7,9 @@ import torchaudio
 from datasets import load_dataset, interleave_datasets, DownloadConfig
 
 # Instruction for instruction-following tasks (audio IS the instruction)
-IF_INSTRUCTION = "これはタスクを説明する音声の指示です。要求を適切に満たす応答を書きなさい。"
+IF_INSTRUCTION = (
+    "これはタスクを説明する音声の指示です。要求を適切に満たす応答を書きなさい。"
+)
 
 
 class ReazonSpeech(torch.utils.data.IterableDataset):
@@ -32,12 +34,20 @@ class ReazonSpeech(torch.utils.data.IterableDataset):
 
         datasets_list = []
         for cfg in configs:
-            ds = load_dataset(dataset_id, cfg, split="train", streaming=True, download_config=dl_config)
+            ds = load_dataset(
+                dataset_id,
+                cfg,
+                split="train",
+                streaming=True,
+                download_config=dl_config,
+            )
             # decode=False にして、iterator 内で例外が起きても iterator が死なないようにする
             ds = ds.cast_column("audio", Audio(decode=False))
             datasets_list.append(ds)
 
-        self.dataset = interleave_datasets(datasets_list, stopping_strategy="all_exhausted")
+        self.dataset = interleave_datasets(
+            datasets_list, stopping_strategy="all_exhausted"
+        )
         self.max_duration = max_duration
 
     def __iter__(self):
@@ -73,7 +83,6 @@ class ReazonSpeech(torch.utils.data.IterableDataset):
                 continue
 
 
-
 class AutoMultiTurn(torch.utils.data.IterableDataset):
     """Text-only multi-turn conversation dataset for maintaining text capability during SFT."""
 
@@ -92,7 +101,9 @@ class AutoMultiTurn(torch.utils.data.IterableDataset):
             use_multi_turn: If True, yield both (q1,a1) and (q2,a2) as separate samples
         """
         dl_config = DownloadConfig(resume_download=True, max_retries=10)
-        self.dataset = load_dataset(dataset_id, split=split, streaming=True, download_config=dl_config)
+        self.dataset = load_dataset(
+            dataset_id, split=split, streaming=True, download_config=dl_config
+        )
         self.max_samples = max_samples
         self.use_multi_turn = use_multi_turn
 
@@ -140,7 +151,9 @@ class SpokenMagpie(torch.utils.data.IterableDataset):
             max_response_length: Maximum response text length
         """
         dl_config = DownloadConfig(resume_download=True, max_retries=10)
-        self.dataset = load_dataset(dataset_id, split=split, streaming=True, download_config=dl_config)
+        self.dataset = load_dataset(
+            dataset_id, split=split, streaming=True, download_config=dl_config
+        )
         self.max_duration = max_duration
         self.max_response_length = max_response_length
 
@@ -187,7 +200,9 @@ class SpokenMultiturnSFT(torch.utils.data.IterableDataset):
         max_response_length: int = 2048,
     ):
         dl_config = DownloadConfig(resume_download=True, max_retries=10)
-        self.dataset = load_dataset(dataset_id, split=split, streaming=True, download_config=dl_config)
+        self.dataset = load_dataset(
+            dataset_id, split=split, streaming=True, download_config=dl_config
+        )
         self.max_duration = max_duration
         self.max_response_length = max_response_length
 
@@ -247,7 +262,9 @@ class FSD50KCaptioned(torch.utils.data.IterableDataset):
         instruction: str = "音声を説明してください。",
     ):
         dl_config = DownloadConfig(resume_download=True, max_retries=10)
-        self.dataset = load_dataset(dataset_id, split=split, streaming=True, download_config=dl_config)
+        self.dataset = load_dataset(
+            dataset_id, split=split, streaming=True, download_config=dl_config
+        )
         self.max_duration = max_duration
         self.max_response_length = max_response_length
         self.instruction = instruction
@@ -296,7 +313,12 @@ class LibriSpeechASR(torch.utils.data.IterableDataset):
         instruction: str = "Transcribe the audio.",
     ):
         dl_config = DownloadConfig(resume_download=True, max_retries=10)
-        self.dataset = load_dataset("openslr/librispeech_asr", split=split, streaming=True, download_config=dl_config)
+        self.dataset = load_dataset(
+            "openslr/librispeech_asr",
+            split=split,
+            streaming=True,
+            download_config=dl_config,
+        )
         self.max_duration = max_duration
         self.instruction = instruction
 
@@ -362,7 +384,9 @@ class TextMultiturn(torch.utils.data.IterableDataset):
         max_response_length: int = 2048,
     ):
         dl_config = DownloadConfig(resume_download=True, max_retries=10)
-        self.dataset = load_dataset(dataset_id, split=split, streaming=True, download_config=dl_config)
+        self.dataset = load_dataset(
+            dataset_id, split=split, streaming=True, download_config=dl_config
+        )
         self.max_response_length = max_response_length
 
     def __iter__(self):
@@ -371,7 +395,10 @@ class TextMultiturn(torch.utils.data.IterableDataset):
                 messages = item["messages"]
                 # Extract user-assistant pairs
                 for i in range(0, len(messages) - 1, 2):
-                    if messages[i]["role"] == "user" and messages[i + 1]["role"] == "assistant":
+                    if (
+                        messages[i]["role"] == "user"
+                        and messages[i + 1]["role"] == "assistant"
+                    ):
                         instruction = messages[i]["content"]
                         response = messages[i + 1]["content"]
 
@@ -392,7 +419,11 @@ class TextMultiturn(torch.utils.data.IterableDataset):
 class InterleavedDataset(torch.utils.data.IterableDataset):
     """Interleave multiple PyTorch IterableDatasets with configurable ratio."""
 
-    def __init__(self, datasets: List[torch.utils.data.IterableDataset], weights: List[int] = None):
+    def __init__(
+        self,
+        datasets: List[torch.utils.data.IterableDataset],
+        weights: List[int] = None,
+    ):
         """
         Args:
             datasets: List of IterableDatasets

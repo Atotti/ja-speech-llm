@@ -96,7 +96,9 @@ def finetune(
     # dispatch_batches=False: each process fetches its own batch independently
     # (required for variable-length audio sequences with different padding sizes)
     dataloader_config = DataLoaderConfiguration(dispatch_batches=False)
-    accelerator = Accelerator(mixed_precision="bf16", dataloader_config=dataloader_config)
+    accelerator = Accelerator(
+        mixed_precision="bf16", dataloader_config=dataloader_config
+    )
     is_main_process = accelerator.is_main_process
 
     # Auto-extract start_step from resume_from path
@@ -154,7 +156,9 @@ def finetune(
         model = LlamaForSpeechLM(config)
         adapter_path = Path(resume_from) / "adapter.pt"
         model.adapter.load_state_dict(torch.load(adapter_path, weights_only=True))
-        model.decoder = PeftModel.from_pretrained(model.decoder, str(lora_checkpoint_path))
+        model.decoder = PeftModel.from_pretrained(
+            model.decoder, str(lora_checkpoint_path)
+        )
         if is_main_process:
             print(f"Loaded adapter from {adapter_path}")
             print(f"Loaded LoRA from {lora_checkpoint_path}")
@@ -166,6 +170,7 @@ def finetune(
         if use_lora:
             # Apply fresh LoRA to resumed model
             from peft import LoraConfig, get_peft_model, TaskType
+
             lora_config = LoraConfig(
                 task_type=TaskType.CAUSAL_LM,
                 r=lora_r,
@@ -183,6 +188,7 @@ def finetune(
         model = LlamaForSpeechLM.from_pretrained(model_id)
         if use_lora:
             from peft import LoraConfig, get_peft_model, TaskType
+
             lora_config = LoraConfig(
                 task_type=TaskType.CAUSAL_LM,
                 r=lora_r,
@@ -193,7 +199,7 @@ def finetune(
             model.decoder = get_peft_model(model.decoder, lora_config)
             # PEFT creates LoRA in float32 by default, convert to bfloat16 to match decoder
             for name, param in model.decoder.named_parameters():
-                if 'lora_' in name and param.requires_grad:
+                if "lora_" in name and param.requires_grad:
                     param.data = param.data.to(torch.bfloat16)
             if is_main_process:
                 print("Applied LoRA to decoder (bfloat16)")
@@ -204,25 +210,39 @@ def finetune(
     # Unfreeze decoder for full fine-tuning
     if unfreeze_decoder:
         model.decoder.requires_grad_(True)
-        trainable_params = sum(p.numel() for p in model.decoder.parameters() if p.requires_grad)
+        trainable_params = sum(
+            p.numel() for p in model.decoder.parameters() if p.requires_grad
+        )
         total_params = sum(p.numel() for p in model.decoder.parameters())
         if is_main_process:
-            print(f"Decoder unfrozen: {trainable_params:,} / {total_params:,} params trainable")
+            print(
+                f"Decoder unfrozen: {trainable_params:,} / {total_params:,} params trainable"
+            )
 
     encoder_processor = AutoProcessor.from_pretrained(model.config.encoder_id)
     decoder_processor = AutoTokenizer.from_pretrained(model.config.decoder_id)
-    decoder_processor.pad_token = decoder_processor.pad_token or decoder_processor.eos_token
+    decoder_processor.pad_token = (
+        decoder_processor.pad_token or decoder_processor.eos_token
+    )
 
     # Build dataset from enabled sources
     datasets = []
     dataset_names = []
 
     if use_spoken_magpie:
-        datasets.append(SpokenMagpie(max_duration=max_duration, max_response_length=max_response_length))
+        datasets.append(
+            SpokenMagpie(
+                max_duration=max_duration, max_response_length=max_response_length
+            )
+        )
         dataset_names.append("spoken_magpie")
 
     if use_spoken_multiturn:
-        datasets.append(SpokenMultiturnSFT(max_duration=max_duration, max_response_length=max_response_length))
+        datasets.append(
+            SpokenMultiturnSFT(
+                max_duration=max_duration, max_response_length=max_response_length
+            )
+        )
         dataset_names.append("spoken_multiturn")
 
     if use_reazon_sft:
@@ -230,11 +250,23 @@ def finetune(
         dataset_names.append("reazon_sft")
 
     if use_fsd50k_cc0:
-        datasets.append(FSD50KCaptioned(dataset_id="Atotti/fsd50k-cc0-Qwen3-Omni-captioned", max_duration=max_duration, max_response_length=max_response_length))
+        datasets.append(
+            FSD50KCaptioned(
+                dataset_id="Atotti/fsd50k-cc0-Qwen3-Omni-captioned",
+                max_duration=max_duration,
+                max_response_length=max_response_length,
+            )
+        )
         dataset_names.append("fsd50k_cc0")
 
     if use_fsd50k_ccby:
-        datasets.append(FSD50KCaptioned(dataset_id="Atotti/fsd50k-ccby-Qwen3-Omni-captioned", max_duration=max_duration, max_response_length=max_response_length))
+        datasets.append(
+            FSD50KCaptioned(
+                dataset_id="Atotti/fsd50k-ccby-Qwen3-Omni-captioned",
+                max_duration=max_duration,
+                max_response_length=max_response_length,
+            )
+        )
         dataset_names.append("fsd50k_ccby")
 
     if use_librispeech:
@@ -254,7 +286,9 @@ def finetune(
     else:
         weights = [1] * len(datasets)
     if len(weights) != len(datasets):
-        raise ValueError(f"dataset_weights length ({len(weights)}) must match enabled datasets ({len(datasets)})")
+        raise ValueError(
+            f"dataset_weights length ({len(weights)}) must match enabled datasets ({len(datasets)})"
+        )
 
     if is_main_process:
         print(f"Enabled datasets: {list(zip(dataset_names, weights))}")
@@ -301,9 +335,7 @@ def finetune(
         return result
 
     # Note: IterableDataset doesn't support shuffle=True, data order depends on dataset
-    loader = torch.utils.data.DataLoader(
-        dataset, batch_size, collate_fn=collate_fn
-    )
+    loader = torch.utils.data.DataLoader(dataset, batch_size, collate_fn=collate_fn)
 
     _train(
         model,

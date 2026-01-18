@@ -1,6 +1,12 @@
 """Speech LLM for Japanese - Package for training and inference."""
 
-from .model import Adapter, LlamaForSpeechLM, LlamaForSpeechLMConfig, AUDIO_START_TOKEN_ID, AUDIO_END_TOKEN_ID
+from .model import (
+    Adapter,
+    LlamaForSpeechLM,
+    LlamaForSpeechLMConfig,
+    AUDIO_START_TOKEN_ID,
+    AUDIO_END_TOKEN_ID,
+)
 from .datasets import (
     ReazonSpeech,
     AutoMultiTurn,
