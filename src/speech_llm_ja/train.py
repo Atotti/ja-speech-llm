@@ -2,7 +2,7 @@
 
 import re
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List
 
 import torch
 import wandb
@@ -36,15 +36,15 @@ def _save_checkpoint(
     model: LlamaForSpeechLM,
     checkpoint_dir: str,
     use_lora: bool = False,
-    accelerator: Optional[Accelerator] = None,
+    accelerator: Accelerator,
 ):
     """Save model checkpoint, handling LoRA if present."""
     # Only save on main process
-    if accelerator is not None and not accelerator.is_main_process:
+    if not accelerator.is_main_process:
         return
 
-    # Unwrap model if using Accelerate
-    unwrapped_model = accelerator.unwrap_model(model) if accelerator else model
+    # Unwrap model for saving
+    unwrapped_model = accelerator.unwrap_model(model)
 
     Path(checkpoint_dir).mkdir(parents=True, exist_ok=True)
 
@@ -82,11 +82,9 @@ def _train(
     start_step: int = 0,
     validate_fn=None,  # Custom validation function (default: validate)
     use_lora: bool = False,  # Whether to save LoRA checkpoints
-    accelerator: Optional[Accelerator] = None,  # Accelerator for multi-GPU
+    accelerator: Accelerator,  # Accelerator for single/multi-GPU
 ):
-    # Use provided accelerator or create a dummy for single-GPU compatibility
-    is_distributed = accelerator is not None
-    is_main_process = not is_distributed or accelerator.is_main_process
+    is_main_process = accelerator.is_main_process
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
 
@@ -107,11 +105,9 @@ def _train(
         lr * 0.1,
     )
 
-    # Prepare with Accelerate if distributed
-    if is_distributed:
-        model, optimizer, loader, lr_scheduler = accelerator.prepare(
-            model, optimizer, loader, lr_scheduler
-        )
+    model, optimizer, loader, lr_scheduler = accelerator.prepare(
+        model, optimizer, loader, lr_scheduler
+    )
 
     # Note: GradScaler is not needed for bfloat16 (same exponent range as float32)
     step = start_step
@@ -119,7 +115,7 @@ def _train(
     for epoch in range(1, epoch + 1):
         model.train()
         # Keep encoder/decoder in eval mode (frozen)
-        unwrapped = accelerator.unwrap_model(model) if is_distributed else model
+        unwrapped = accelerator.unwrap_model(model)
         unwrapped.encoder.eval()
         unwrapped.decoder.eval()
 
@@ -127,21 +123,15 @@ def _train(
         loader_iter = tqdm(loader, desc=f"epoch {epoch}", disable=not is_main_process)
 
         for batch_idx, batch in enumerate(loader_iter):
-            with accelerator.autocast() if is_distributed else torch.amp.autocast("cuda", dtype=torch.bfloat16):
+            with accelerator.autocast():
                 loss = model(**batch)
                 loss = loss / grad_accumulation
 
-            if is_distributed:
-                accelerator.backward(loss)
-            else:
-                loss.backward()
+            accelerator.backward(loss)
 
             if (batch_idx + 1) % grad_accumulation == 0:
                 # gradient clipping
-                if is_distributed:
-                    grad_norm = accelerator.clip_grad_norm_(model.parameters(), clip_grad_norm)
-                else:
-                    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad_norm)
+                grad_norm = accelerator.clip_grad_norm_(model.parameters(), clip_grad_norm)
 
                 # update
                 optimizer.step()
@@ -165,7 +155,7 @@ def _train(
                 if val_check_interval is not None and step % val_check_interval == 0:
                     if is_main_process:
                         # Get unwrapped model for validation
-                        eval_model = accelerator.unwrap_model(model) if is_distributed else model
+                        eval_model = accelerator.unwrap_model(model)
                         _validate_fn = validate_fn or validate
                         _validate_fn(
                             eval_model,
@@ -183,11 +173,10 @@ def _train(
                         _save_checkpoint(model, checkpoint_dir, use_lora, accelerator)
 
                     # Sync all processes after validation
-                    if is_distributed:
-                        accelerator.wait_for_everyone()
+                    accelerator.wait_for_everyone()
 
                     model.train()
-                    unwrapped = accelerator.unwrap_model(model) if is_distributed else model
+                    unwrapped = accelerator.unwrap_model(model)
                     unwrapped.encoder.eval()
                     unwrapped.decoder.eval()
 
@@ -197,7 +186,7 @@ def _train(
 
         # validation at epoch end (if val_check_interval is not set)
         if val_check_interval is None and is_main_process:
-            eval_model = accelerator.unwrap_model(model) if is_distributed else model
+            eval_model = accelerator.unwrap_model(model)
             _validate_fn = validate_fn or validate
             _validate_fn(
                 eval_model,
@@ -216,8 +205,7 @@ def _train(
             checkpoint_dir = f"{model_dir}-step{step}"
             _save_checkpoint(model, checkpoint_dir, use_lora, accelerator)
 
-        if is_distributed:
-            accelerator.wait_for_everyone()
+        accelerator.wait_for_everyone()
 
         if max_steps is not None and step >= target_step:
             break
@@ -248,8 +236,6 @@ def train(
     # Dataset weights
     asr_weight: int = 1,
     aac_weight: int = 0,  # Default: ASR only. Set to 1 to enable AAC (FSD50K)
-    # Multi-GPU
-    use_accelerate: bool = False,
 ):
     """
     Train adapter on ASR (ReazonSpeech) + AAC (FSD50K).
@@ -260,18 +246,13 @@ def train(
         unfreeze_decoder: If True, unfreeze decoder for full training (~8B params).
         asr_weight: Weight for ASR dataset (ReazonSpeech). Default: 1.
         aac_weight: Weight for AAC dataset (FSD50K). Default: 0 (disabled).
-        use_accelerate: If True, use HuggingFace Accelerate for multi-GPU training.
     """
-    # Initialize Accelerator for multi-GPU
-    accelerator = None
-    if use_accelerate:
-        # dispatch_batches=False: each process fetches its own batch independently
-        # (required for variable-length audio sequences with different padding sizes)
-        dataloader_config = DataLoaderConfiguration(dispatch_batches=False)
-        accelerator = Accelerator(mixed_precision="bf16", dataloader_config=dataloader_config)
-        is_main_process = accelerator.is_main_process
-    else:
-        is_main_process = True
+    # Initialize Accelerator (single GPU or multi-GPU)
+    # dispatch_batches=False: each process fetches its own batch independently
+    # (required for variable-length audio sequences with different padding sizes)
+    dataloader_config = DataLoaderConfiguration(dispatch_batches=False)
+    accelerator = Accelerator(mixed_precision="bf16", dataloader_config=dataloader_config)
+    is_main_process = accelerator.is_main_process
 
     # Initialize wandb (main process only)
     if is_main_process:
@@ -292,8 +273,7 @@ def train(
                 "unfreeze_decoder": unfreeze_decoder,
                 "asr_weight": asr_weight,
                 "aac_weight": aac_weight,
-                "use_accelerate": use_accelerate,
-                "num_processes": accelerator.num_processes if accelerator else 1,
+                "num_processes": accelerator.num_processes,
             },
         )
 
@@ -301,11 +281,8 @@ def train(
         # Resume from checkpoint
         if is_main_process:
             print(f"Resuming from checkpoint: {resume_from}")
-        if use_accelerate:
-            # Don't move to cuda - Accelerate handles device placement
-            model = LlamaForSpeechLM.from_pretrained(resume_from)
-        else:
-            model = LlamaForSpeechLM.from_pretrained(resume_from).cuda()
+        # Don't move to cuda - Accelerate handles device placement
+        model = LlamaForSpeechLM.from_pretrained(resume_from)
         # Use encoder/decoder IDs from checkpoint
         encoder_id = model.config.encoder_id
         decoder_id = model.config.decoder_id
@@ -317,10 +294,7 @@ def train(
                 print(f"Auto-detected start_step: {start_step}")
     else:
         # Create new model
-        if use_accelerate:
-            model = LlamaForSpeechLM(LlamaForSpeechLMConfig(encoder_id=encoder_id, decoder_id=decoder_id))
-        else:
-            model = LlamaForSpeechLM(LlamaForSpeechLMConfig(encoder_id=encoder_id, decoder_id=decoder_id)).cuda()
+        model = LlamaForSpeechLM(LlamaForSpeechLMConfig(encoder_id=encoder_id, decoder_id=decoder_id))
 
     # Unfreeze decoder for full training
     if unfreeze_decoder:
@@ -395,10 +369,6 @@ def train(
             "encoder_attention_mask": encoder_inputs.attention_mask,
             "decoder_attention_mask": decoder_inputs.attention_mask,
         }
-
-        # Move to cuda only for single-GPU (non-Accelerate) mode
-        if not use_accelerate:
-            result = {k: v.cuda() for k, v in result.items()}
 
         return result
 

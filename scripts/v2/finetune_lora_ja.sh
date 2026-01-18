@@ -30,11 +30,16 @@ echo "Mode: LoRA (adapter + LoRA) (v2)"
 
 if [ -n "$RESUME_FROM" ]; then
     echo "Resuming from: $RESUME_FROM"
-    uv run python -c "from demo2_ja import finetune; finetune(resume_from='${RESUME_FROM}', use_lora=True, lr=1e-4, max_steps=1000000000, batch_size=4, grad_accumulation=32, warmup_steps=100, val_check_interval=1000, model_dir='models/v2/LlamaForSpeechLM-ja-Instruct-LoRA-${TIMESTAMP}')"
+    ARGS="--resume-from $RESUME_FROM"
 elif [ -n "$MODEL_ID" ]; then
     echo "Starting from: $MODEL_ID"
-    uv run python -c "from demo2_ja import finetune; finetune(model_id='${MODEL_ID}', use_lora=True, lr=1e-4, max_steps=1000000000, batch_size=4, grad_accumulation=32, warmup_steps=100, val_check_interval=1000, model_dir='models/v2/LlamaForSpeechLM-ja-Instruct-LoRA-${TIMESTAMP}')"
+    ARGS="--model-id $MODEL_ID"
 else
     echo "Error: MODEL_ID or RESUME_FROM is required"
     exit 1
 fi
+
+COMMON_ARGS="--use-lora --max-steps 1000000000 --batch-size 4 --grad-accumulation 32 --warmup-steps 100 --val-check-interval 1000 --lr 1e-4"
+MODEL_DIR="models/v2/LlamaForSpeechLM-ja-Instruct-LoRA-${TIMESTAMP}"
+
+uv run accelerate launch --num_processes 1 scripts/v2/finetune_accelerate.py $COMMON_ARGS $ARGS --model-dir $MODEL_DIR

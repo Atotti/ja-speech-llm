@@ -1,12 +1,10 @@
 #!/usr/bin/env python
-"""Standalone training script for multi-GPU with Accelerate.
+"""Train script for Accelerate (single or multi-GPU).
 
 Usage:
-    # 8 GPU training
-    accelerate launch --num_processes 8 scripts/v2/train_multi_gpu.py
+    accelerate launch --num_processes 1 scripts/v2/train_accelerate.py
 
-    # With arguments
-    accelerate launch --num_processes 8 scripts/v2/train_multi_gpu.py \
+    accelerate launch --num_processes 8 scripts/v2/train_accelerate.py \
         --max-steps 100000 --batch-size 4 --model-dir models/v2/LlamaForSpeechLM-ja
 """
 
@@ -20,8 +18,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 from speech_llm_ja import train
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Train Speech LLM with multi-GPU support")
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Train Speech LLM with Accelerate")
     parser.add_argument("--encoder-id", default="openai/whisper-large-v3")
     parser.add_argument("--decoder-id", default="/groups/gch51701/Team031/model/pretrained/v4-8b-decay2m-ipt_v3.1-instruct4")
     parser.add_argument("--batch-size", type=int, default=4)
@@ -58,7 +56,6 @@ def main():
         unfreeze_decoder=args.unfreeze_decoder,
         asr_weight=args.asr_weight,
         aac_weight=args.aac_weight,
-        use_accelerate=True,  # Enable multi-GPU
     )
 
 

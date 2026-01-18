@@ -29,11 +29,16 @@ echo "Mode: Full decoder (adapter + full decoder ~8B params) (v2)"
 
 if [ -n "$RESUME_FROM" ]; then
     echo "Resuming from: $RESUME_FROM"
-    uv run python -c "from demo2_ja import finetune; finetune(resume_from='${RESUME_FROM}', unfreeze_decoder=True, lr=5e-5, max_steps=1000000000, batch_size=2, grad_accumulation=64, warmup_steps=100, val_check_interval=1000, model_dir='models/v2/LlamaForSpeechLM-ja-Instruct-Full-${TIMESTAMP}')"
+    ARGS="--resume-from $RESUME_FROM"
 elif [ -n "$MODEL_ID" ]; then
     echo "Starting from: $MODEL_ID"
-    uv run python -c "from demo2_ja import finetune; finetune(model_id='${MODEL_ID}', unfreeze_decoder=True, lr=5e-5, max_steps=1000000000, batch_size=2, grad_accumulation=64, warmup_steps=100, val_check_interval=1000, model_dir='models/v2/LlamaForSpeechLM-ja-Instruct-Full-${TIMESTAMP}')"
+    ARGS="--model-id $MODEL_ID"
 else
     echo "Error: MODEL_ID or RESUME_FROM is required"
     exit 1
 fi
+
+COMMON_ARGS="--unfreeze-decoder --max-steps 1000000000 --batch-size 2 --grad-accumulation 64 --warmup-steps 100 --val-check-interval 1000 --lr 5e-5"
+MODEL_DIR="models/v2/LlamaForSpeechLM-ja-Instruct-Full-${TIMESTAMP}"
+
+uv run accelerate launch --num_processes 1 scripts/v2/finetune_accelerate.py $COMMON_ARGS $ARGS --model-dir $MODEL_DIR

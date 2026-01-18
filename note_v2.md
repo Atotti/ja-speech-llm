@@ -4,25 +4,39 @@
 ## アラインメント学習 (Pretrain)
 ```bash
 # 新規
-uv run python -c "from demo2_ja import train; train(max_steps=100, batch_size=32, grad_accumulation=2, warmup_steps=10, val_check_interval=50, model_dir='models/v2/debug-align')"
+uv run accelerate launch --num_processes 1 scripts/v2/train_accelerate.py \
+    --max-steps 100 --batch-size 32 --grad-accumulation 2 --warmup-steps 10 \
+    --val-check-interval 50 --model-dir models/v2/debug-align
 
 # 再開
-uv run python -c "from demo2_ja import train; train(resume_from='models/v2/LlamaForSpeechLM-ja-XXXXXXXX-stepXXXXX', max_steps=100, batch_size=32, grad_accumulation=2, warmup_steps=10, val_check_interval=50, model_dir='models/v2/debug-align')"
+uv run accelerate launch --num_processes 1 scripts/v2/train_accelerate.py \
+    --resume-from models/v2/LlamaForSpeechLM-ja-XXXXXXXX-stepXXXXX \
+    --max-steps 100 --batch-size 32 --grad-accumulation 2 --warmup-steps 10 \
+    --val-check-interval 50 --model-dir models/v2/debug-align
 ```
 
 ## fine-tune (Adapter のみ)
 ```bash
-uv run python -c "from demo2_ja import finetune; finetune(model_id='models/LlamaForSpeechLM-ja-Instruct-20260112-223832-step11000', max_steps=100, batch_size=8, grad_accumulation=2, warmup_steps=10, val_check_interval=50, model_dir='models/v2/debug-adapter')"
+uv run accelerate launch --num_processes 1 scripts/v2/finetune_accelerate.py \
+    --model-id models/LlamaForSpeechLM-ja-Instruct-20260112-223832-step11000 \
+    --max-steps 100 --batch-size 8 --grad-accumulation 2 --warmup-steps 10 \
+    --val-check-interval 50 --model-dir models/v2/debug-adapter
 ```
 
 ## fine-tune (LoRA)
 ```bash
-uv run python -c "from demo2_ja import finetune; finetune(model_id='models/LlamaForSpeechLM-ja-Instruct-20260112-223832-step11000', use_lora=True, max_steps=100, batch_size=8, grad_accumulation=2, warmup_steps=10, val_check_interval=50, model_dir='models/v2/debug-lora')"
+uv run accelerate launch --num_processes 1 scripts/v2/finetune_accelerate.py \
+    --use-lora --model-id models/LlamaForSpeechLM-ja-Instruct-20260112-223832-step11000 \
+    --max-steps 100 --batch-size 8 --grad-accumulation 2 --warmup-steps 10 \
+    --val-check-interval 50 --model-dir models/v2/debug-lora
 ```
 
 ## fine-tune (Full decoder)
 ```bash
-uv run python -c "from demo2_ja import finetune; finetune(model_id='models/LlamaForSpeechLM-ja-Instruct-20260112-223832-step11000', unfreeze_decoder=True, max_steps=100, batch_size=2, grad_accumulation=4, warmup_steps=10, val_check_interval=50, model_dir='models/v2/debug-full')"
+uv run accelerate launch --num_processes 1 scripts/v2/finetune_accelerate.py \
+    --unfreeze-decoder --model-id models/LlamaForSpeechLM-ja-Instruct-20260112-223832-step11000 \
+    --max-steps 100 --batch-size 2 --grad-accumulation 4 --warmup-steps 10 \
+    --val-check-interval 50 --model-dir models/v2/debug-full
 ```
 
 ---
@@ -64,4 +78,3 @@ qsub -v MODEL_ID=models/LlamaForSpeechLM-ja-Instruct-20260112-223832-step11000 s
 # 再開
 qsub -v RESUME_FROM=models/v2/LlamaForSpeechLM-ja-Instruct-Full-XXXXXXXX-stepXXXXX scripts/v2/finetune_full_ja.sh
 ```
-

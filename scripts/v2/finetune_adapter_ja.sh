@@ -29,11 +29,16 @@ echo "Mode: Adapter only (v2)"
 
 if [ -n "$RESUME_FROM" ]; then
     echo "Resuming from: $RESUME_FROM"
-    uv run python -c "from demo2_ja import finetune; finetune(resume_from='${RESUME_FROM}', lr=1e-4, max_steps=1000000000, batch_size=8, grad_accumulation=16, warmup_steps=100, val_check_interval=1000, model_dir='models/v2/LlamaForSpeechLM-ja-Instruct-${TIMESTAMP}')"
+    ARGS="--resume-from $RESUME_FROM"
 elif [ -n "$MODEL_ID" ]; then
     echo "Starting from: $MODEL_ID"
-    uv run python -c "from demo2_ja import finetune; finetune(model_id='${MODEL_ID}', lr=1e-4, max_steps=1000000000, batch_size=8, grad_accumulation=16, warmup_steps=100, val_check_interval=1000, model_dir='models/v2/LlamaForSpeechLM-ja-Instruct-${TIMESTAMP}')"
+    ARGS="--model-id $MODEL_ID"
 else
     echo "Error: MODEL_ID or RESUME_FROM is required"
     exit 1
 fi
+
+COMMON_ARGS="--max-steps 1000000000 --batch-size 8 --grad-accumulation 16 --warmup-steps 100 --val-check-interval 1000 --lr 1e-4"
+MODEL_DIR="models/v2/LlamaForSpeechLM-ja-Instruct-${TIMESTAMP}"
+
+uv run accelerate launch --num_processes 1 scripts/v2/finetune_accelerate.py $COMMON_ARGS $ARGS --model-dir $MODEL_DIR

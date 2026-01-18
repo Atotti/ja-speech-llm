@@ -43,4 +43,4 @@ fi
 
 echo "Arguments: $ARGS"
 
-uv run accelerate launch --num_processes 8 scripts/v2/finetune_multi_gpu.py $ARGS
+uv run accelerate launch --num_processes 8 scripts/v2/finetune_accelerate.py $ARGS

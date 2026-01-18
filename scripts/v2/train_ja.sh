@@ -23,10 +23,13 @@ TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 # Usage: qsub -v RESUME_FROM=models/v2/LlamaForSpeechLM-ja-step20000 scripts/v2/train_ja.sh
 if [ -n "$RESUME_FROM" ]; then
     echo "Resuming from: $RESUME_FROM"
-    RESUME_ARG="resume_from='${RESUME_FROM}',"
+    RESUME_ARG="--resume-from $RESUME_FROM"
 else
     echo "Starting new training"
     RESUME_ARG=""
 fi
 
-uv run python -c "from demo2_ja import train; train(${RESUME_ARG} lr=1e-4, max_steps=1000000000, batch_size=32, grad_accumulation=4, warmup_steps=10, val_check_interval=5000, model_dir='models/v2/LlamaForSpeechLM-ja-${TIMESTAMP}')"
+COMMON_ARGS="--max-steps 1000000000 --batch-size 32 --grad-accumulation 4 --warmup-steps 10 --val-check-interval 5000 --lr 1e-4"
+MODEL_DIR="models/v2/LlamaForSpeechLM-ja-${TIMESTAMP}"
+
+uv run accelerate launch --num_processes 1 scripts/v2/train_accelerate.py $COMMON_ARGS $RESUME_ARG --model-dir $MODEL_DIR

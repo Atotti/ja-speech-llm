@@ -37,4 +37,4 @@ echo "Mode: 8-GPU training with Accelerate"
 echo "Arguments: $ARGS"
 
 # Launch with Accelerate (8 GPUs)
-uv run accelerate launch --num_processes 8 scripts/v2/train_multi_gpu.py $ARGS
+uv run accelerate launch --num_processes 8 scripts/v2/train_accelerate.py $ARGS

@@ -1,13 +1,11 @@
 #!/usr/bin/env python
-"""Standalone finetune script for multi-GPU with Accelerate.
+"""Finetune script for Accelerate (single or multi-GPU).
 
 Usage:
-    # 8 GPU training
-    accelerate launch --num_processes 8 scripts/v2/finetune_multi_gpu.py \
+    accelerate launch --num_processes 1 scripts/v2/finetune_accelerate.py \
         --model-id models/v2/LlamaForSpeechLM-ja-step50000
 
-    # With LoRA
-    accelerate launch --num_processes 8 scripts/v2/finetune_multi_gpu.py \
+    accelerate launch --num_processes 8 scripts/v2/finetune_accelerate.py \
         --model-id models/v2/LlamaForSpeechLM-ja-step50000 --use-lora
 """
 
@@ -21,8 +19,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 from speech_llm_ja import finetune
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Finetune Speech LLM with multi-GPU support")
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Finetune Speech LLM with Accelerate")
     parser.add_argument("--model-id", default="models/v2/LlamaForSpeechLM-ja")
     parser.add_argument("--model-dir", default="models/v2/LlamaForSpeechLM-ja-Instruct")
     parser.add_argument("--batch-size", type=int, default=2)
@@ -60,7 +58,6 @@ def main():
         unfreeze_decoder=args.unfreeze_decoder,
         lora_r=args.lora_r,
         lora_alpha=args.lora_alpha,
-        use_accelerate=True,  # Enable multi-GPU
     )
 
 

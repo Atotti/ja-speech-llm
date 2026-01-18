@@ -2,7 +2,7 @@
 
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import torch
 import wandb
@@ -55,8 +55,6 @@ def finetune(
     use_fsd50k_ccby: bool = True,
     use_librispeech: bool = True,
     dataset_weights: List[int] = None,  # Default: [2, 1, 4, 1, 1, 1] when all enabled
-    # Multi-GPU
-    use_accelerate: bool = False,
 ):
     """
     Finetune adapter on multiple audio instruction datasets.
@@ -87,7 +85,6 @@ def finetune(
         use_fsd50k_ccby: Enable FSD50K CCBY audio captioning dataset
         use_librispeech: Enable LibriSpeech English ASR dataset
         dataset_weights: Weights for enabled datasets (default: equal weights)
-        use_accelerate: If True, use HuggingFace Accelerate for multi-GPU training.
     """
     if use_lora and unfreeze_decoder:
         raise ValueError("use_lora and unfreeze_decoder are mutually exclusive")
@@ -95,16 +92,12 @@ def finetune(
     if lora_target_modules is None:
         lora_target_modules = ["q_proj", "v_proj"]
 
-    # Initialize Accelerator for multi-GPU
-    accelerator = None
-    if use_accelerate:
-        # dispatch_batches=False: each process fetches its own batch independently
-        # (required for variable-length audio sequences with different padding sizes)
-        dataloader_config = DataLoaderConfiguration(dispatch_batches=False)
-        accelerator = Accelerator(mixed_precision="bf16", dataloader_config=dataloader_config)
-        is_main_process = accelerator.is_main_process
-    else:
-        is_main_process = True
+    # Initialize Accelerator (single GPU or multi-GPU)
+    # dispatch_batches=False: each process fetches its own batch independently
+    # (required for variable-length audio sequences with different padding sizes)
+    dataloader_config = DataLoaderConfiguration(dispatch_batches=False)
+    accelerator = Accelerator(mixed_precision="bf16", dataloader_config=dataloader_config)
+    is_main_process = accelerator.is_main_process
 
     # Auto-extract start_step from resume_from path
     if resume_from is not None and start_step == 0:
@@ -146,12 +139,11 @@ def finetune(
                 "use_fsd50k_ccby": use_fsd50k_ccby,
                 "use_librispeech": use_librispeech,
                 "dataset_weights": dataset_weights,
-                "use_accelerate": use_accelerate,
-                "num_processes": accelerator.num_processes if accelerator else 1,
+                "num_processes": accelerator.num_processes,
             },
         )
 
-    # Load model (don't move to cuda when using Accelerate)
+    # Load model (Accelerate handles device placement)
     if resume_from is not None and lora_checkpoint_path is not None:
         # Resume from LoRA checkpoint: load config + adapter + LoRA separately
         if is_main_process:
@@ -160,8 +152,6 @@ def finetune(
 
         config = LlamaForSpeechLMConfig.from_pretrained(resume_from)
         model = LlamaForSpeechLM(config)
-        if not use_accelerate:
-            model = model.cuda()
         adapter_path = Path(resume_from) / "adapter.pt"
         model.adapter.load_state_dict(torch.load(adapter_path, weights_only=True))
         model.decoder = PeftModel.from_pretrained(model.decoder, str(lora_checkpoint_path))
@@ -173,8 +163,6 @@ def finetune(
         if is_main_process:
             print(f"Resuming from checkpoint: {resume_from}")
         model = LlamaForSpeechLM.from_pretrained(resume_from)
-        if not use_accelerate:
-            model = model.cuda()
         if use_lora:
             # Apply fresh LoRA to resumed model
             from peft import LoraConfig, get_peft_model, TaskType
@@ -193,8 +181,6 @@ def finetune(
         if is_main_process:
             print(f"Loading model from: {model_id}")
         model = LlamaForSpeechLM.from_pretrained(model_id)
-        if not use_accelerate:
-            model = model.cuda()
         if use_lora:
             from peft import LoraConfig, get_peft_model, TaskType
             lora_config = LoraConfig(
@@ -311,10 +297,6 @@ def finetune(
             "input_features": encoder_inputs.input_features,
             "encoder_attention_mask": encoder_inputs.attention_mask,
         }
-
-        # Move to cuda only for single-GPU (non-Accelerate) mode
-        if not use_accelerate:
-            result = {k: v.cuda() for k, v in result.items()}
 
         return result
 
