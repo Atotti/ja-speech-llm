@@ -3,7 +3,7 @@
 #PBS -q rt_HG
 #PBS -N speech-llm-ja-v2
 #PBS -l select=1:ncpus=24:ngpus=1
-#PBS -l walltime=168:00:00
+#PBS -l walltime=12:00:00
 #PBS -o logs/
 #PBS -e logs/
 #PBS -m n
@@ -12,6 +12,12 @@
 # Format: システムプロンプト + <|reserved_343|>[audio]<|reserved_342|> + 指示 + 応答
 
 cd $PBS_O_WORKDIR
+
+JOBID=${PBS_JOBID%%.*}
+mkdir -p ./logs
+LOGFILE=./logs/train-1gpu-$JOBID.out
+ERRFILE=./logs/train-1gpu-$JOBID.err
+exec > $LOGFILE 2> $ERRFILE
 
 source /etc/profile.d/modules.sh
 module load cuda/12.4
