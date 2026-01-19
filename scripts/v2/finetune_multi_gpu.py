@@ -45,7 +45,7 @@ def main():
     # Dataset options
     parser.add_argument("--dataset-weights", type=int, nargs="+", default=None,
                         help="Weights for datasets: [magpie, multiturn, reazon, fsd50k_cc0, fsd50k_ccby, librispeech, text_multiturn]")
-    parser.add_argument("--use-text-multiturn", action="store_true",
+    parser.add_argument("--use-text-multiturn", type=bool, default=True,
                         help="Enable text-only multiturn dataset for capability preservation")
 
     args = parser.parse_args()
