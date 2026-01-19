@@ -16,6 +16,9 @@ cd $PBS_O_WORKDIR
 # ログ用の設定
 export PYTHONUNBUFFERED=1
 JOBID=${PBS_JOBID%%.*}
+if [ -n "$JOBID" ]; then
+  export WANDB_NAME="train-1gpu-${JOBID}"
+fi
 mkdir -p ./logs
 LOGFILE=./logs/train-1gpu-$JOBID.out
 ERRFILE=./logs/train-1gpu-$JOBID.err

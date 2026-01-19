@@ -13,6 +13,11 @@
 
 cd $PBS_O_WORKDIR
 
+JOBID=${PBS_JOBID%%.*}
+if [ -n "$JOBID" ]; then
+  export WANDB_NAME="finetune-lora-1gpu-${JOBID}"
+fi
+
 source /etc/profile.d/modules.sh
 module load cuda/12.4
 module load cudnn/9.5
