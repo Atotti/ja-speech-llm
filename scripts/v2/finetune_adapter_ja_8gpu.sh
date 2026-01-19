@@ -27,7 +27,7 @@ TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 
 echo "Mode: Adapter only - 8 GPU (v2)"
 
-ARGS="--max-steps 1000000000 --batch-size 2 --grad-accumulation 8 --warmup-steps 100 --val-check-interval-samples 80000 --lr 1e-4"
+ARGS="--max-steps 1000000000 --batch-size 2 --grad-accumulation 8 --warmup-steps 100 --val-check-interval-samples 800000 --lr 1e-4"
 MODEL_DIR="models/v2/LlamaForSpeechLM-ja-Instruct-${TIMESTAMP}"
 
 if [ -n "$RESUME_FROM" ]; then

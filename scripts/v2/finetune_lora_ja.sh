@@ -39,7 +39,7 @@ else
   exit 1
 fi
 
-COMMON_ARGS="--use-lora --max-steps 1000000000 --batch-size 4 --grad-accumulation 32 --warmup-steps 100 --val-check-interval-samples 10000 --lr 1e-4"
+COMMON_ARGS="--use-lora --max-steps 1000000000 --batch-size 4 --grad-accumulation 32 --warmup-steps 100 --val-check-interval-samples 100000 --lr 1e-4"
 MODEL_DIR="models/v2/LlamaForSpeechLM-ja-Instruct-LoRA-${TIMESTAMP}"
 
 uv run accelerate launch --num_processes 1 scripts/v2/finetune_accelerate.py $COMMON_ARGS $ARGS --model-dir $MODEL_DIR

@@ -27,7 +27,7 @@ TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 
 echo "Mode: LoRA (adapter + LoRA) - 8 GPU (v2)"
 
-ARGS="--use-lora --max-steps 1000000000 --batch-size 1 --grad-accumulation 16 --warmup-steps 100 --val-check-interval-samples 80000 --lr 1e-4"
+ARGS="--use-lora --max-steps 1000000000 --batch-size 1 --grad-accumulation 16 --warmup-steps 100 --val-check-interval-samples 800000 --lr 1e-4"
 MODEL_DIR="models/v2/LlamaForSpeechLM-ja-Instruct-LoRA-${TIMESTAMP}"
 
 if [ -n "$RESUME_FROM" ]; then

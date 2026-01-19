@@ -37,7 +37,7 @@ else
   RESUME_ARG=""
 fi
 
-COMMON_ARGS="--decoder-id /groups/gch51701/Team031/model/pretrained/v4-8b-decay2m-ipt_v3.1-instruct4 --max-steps 20000 --batch-size 16 --grad-accumulation 1 --warmup-steps 10 --val-check-interval-samples 10000 --lr 1e-4"
+COMMON_ARGS="--decoder-id /groups/gch51701/Team031/model/pretrained/v4-8b-decay2m-ipt_v3.1-instruct4 --max-steps 20000 --batch-size 16 --grad-accumulation 1 --warmup-steps 100 --val-check-interval-samples 100000 --lr 1e-4"
 MODEL_DIR="models/v2/LlamaForSpeechLM-ja-${TIMESTAMP}"
 
 uv run accelerate launch --num_processes 1 scripts/v2/train_accelerate.py $COMMON_ARGS $RESUME_ARG --model-dir $MODEL_DIR

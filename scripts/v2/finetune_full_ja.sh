@@ -38,7 +38,7 @@ else
   exit 1
 fi
 
-COMMON_ARGS="--unfreeze-decoder --max-steps 1000000000 --batch-size 2 --grad-accumulation 64 --warmup-steps 100 --val-check-interval-samples 10000 --lr 5e-5"
+COMMON_ARGS="--unfreeze-decoder --max-steps 1000000000 --batch-size 2 --grad-accumulation 64 --warmup-steps 100 --val-check-interval-samples 100000 --lr 5e-5"
 MODEL_DIR="models/v2/LlamaForSpeechLM-ja-Instruct-Full-${TIMESTAMP}"
 
 uv run accelerate launch --num_processes 1 scripts/v2/finetune_accelerate.py $COMMON_ARGS $ARGS --model-dir $MODEL_DIR

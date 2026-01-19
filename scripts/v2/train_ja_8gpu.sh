@@ -20,7 +20,7 @@ module load cudnn/9.5
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 
 # Arguments for accelerate launch
-ARGS="--max-steps 1000000000 --batch-size 4 --grad-accumulation 4 --warmup-steps 10 --val-check-interval-samples 80000 --lr 1e-4"
+ARGS="--max-steps 1000000000 --batch-size 4 --grad-accumulation 4 --warmup-steps 10 --val-check-interval-samples 800000 --lr 1e-4"
 
 # Build model-dir and optional resume argument
 MODEL_DIR="models/v2/LlamaForSpeechLM-ja-${TIMESTAMP}"

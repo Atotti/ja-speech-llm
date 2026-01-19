@@ -27,7 +27,7 @@ TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 
 echo "Mode: Full decoder - 8 GPU (v2)"
 
-ARGS="--unfreeze-decoder --max-steps 1000000000 --batch-size 1 --grad-accumulation 16 --warmup-steps 100 --val-check-interval-samples 10000 --lr 5e-5"
+ARGS="--unfreeze-decoder --max-steps 1000000000 --batch-size 1 --grad-accumulation 16 --warmup-steps 100 --val-check-interval-samples 100000 --lr 5e-5"
 MODEL_DIR="models/v2/LlamaForSpeechLM-ja-Instruct-Full-${TIMESTAMP}"
 
 if [ -n "$RESUME_FROM" ]; then
