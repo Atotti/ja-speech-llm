@@ -151,10 +151,18 @@ def _train(
         unwrapped.encoder.eval()
         unwrapped.decoder.eval()
 
+        accum_loss = None
         for batch_idx, batch in enumerate(loader):
             with accelerator.autocast():
-                loss = model(**batch)
-                loss = loss / optimizer_config.grad_accumulation
+                raw_loss = model(**batch)
+                # loss = 1 / grad_accum * \Sigma loss
+                # とすることでeffective batch size内の平均Lossになるようにする
+                loss = raw_loss / optimizer_config.grad_accumulation
+
+            if accum_loss is None:
+                accum_loss = raw_loss.detach().float()
+            else:
+                accum_loss += raw_loss.detach().float()
 
             accelerator.backward(loss)
 
@@ -180,15 +188,18 @@ def _train(
                     * accelerator.num_processes
                 )
 
+                avg_loss = accum_loss / optimizer_config.grad_accumulation
+                accum_loss = None
+
                 # wandb log (main process only)
                 if is_main_process:
                     print(
-                        f"step={step}|train_loss={loss.item():.6f}|consumed_samples={consumed_samples}|lr={current_lr:.6e}",
+                        f"step={step}|train_loss={avg_loss.item():.6f}|consumed_samples={consumed_samples}|lr={current_lr:.6e}",
                         flush=True,
                     )
                     wandb.log(
                         {
-                            "train/loss": loss.item(),
+                            "train/loss": avg_loss.item(),
                             "train/consumed_samples": consumed_samples,
                             "train/global_step": step,
                             "train/lr": current_lr,
@@ -344,7 +355,7 @@ def train(
         if match and start_step == 0:
             start_step = int(match.group(1))
             if is_main_process:
-                print(f"Auto-detected start_step: {start_step}")
+                print(f"Auto-d/etected start_step: {start_step}")
     else:
         # Create new model
         model = LlamaForSpeechLM(
