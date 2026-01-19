@@ -181,12 +181,26 @@ def validate_finetune(
     num_beams: int = 1,
     data_dir="data",  # unused, kept for compatibility
     val_samples: int = 50,
-    dataset_id: str = "Atotti/spoken-magpie-ja",
+    gen_samples: int = 10,
+    # Dataset selection (same as finetune)
+    use_spoken_magpie: bool = True,
+    use_spoken_multiturn: bool = True,
+    use_reazon_sft: bool = True,
+    use_fsd50k_cc0: bool = True,
+    use_fsd50k_ccby: bool = True,
+    use_librispeech: bool = True,
 ):
-    """Validation for finetune: compute loss and generate samples on spoken-magpie-ja."""
+    """Validation for finetune: compute loss and generate samples on all enabled datasets."""
     import numpy as np
 
-    from .datasets import IF_INSTRUCTION
+    from .datasets import (
+        IF_INSTRUCTION,
+        SpokenMagpie,
+        SpokenMultiturnSFT,
+        ReazonSpeechSFT,
+        FSD50KCaptioned,
+        LibriSpeechASR,
+    )
 
     model.eval()
 
@@ -209,110 +223,164 @@ def validate_finetune(
 ### 応答:
 {}<|eos|>"""
 
-    # Load validation samples (use streaming to avoid caching issues)
-    dl_config = DownloadConfig(resume_download=True, max_retries=20)
-    val_dataset = load_dataset(dataset_id, split="train", streaming=True, download_config=dl_config)
+    # Define dataset configs
+    dataset_configs = []
 
-    samples = []
-    for i, item in enumerate(val_dataset):
-        if i >= val_samples:
-            break
-        try:
-            audio_data = item["instruction_audio"]
-            wav = audio_data["array"]
-            sr = audio_data["sampling_rate"]
+    if use_spoken_magpie:
+        dataset_configs.append({
+            "name": "spoken_magpie",
+            "dataset": SpokenMagpie(max_duration=30.0),
+            "instruction_key": "instruction",  # IF_INSTRUCTION is already set in dataset
+        })
 
-            if isinstance(wav, list):
-                wav = np.array(wav, dtype=np.float32)
+    if use_spoken_multiturn:
+        dataset_configs.append({
+            "name": "spoken_multiturn",
+            "dataset": SpokenMultiturnSFT(max_duration=30.0),
+            "instruction_key": "instruction",
+        })
 
-            audio = torch.from_numpy(wav).float()
-            if sr != 16000:
-                audio = torchaudio.functional.resample(audio, sr, 16000)
+    if use_reazon_sft:
+        dataset_configs.append({
+            "name": "reazon_sft",
+            "dataset": ReazonSpeechSFT(split="test", max_duration=30.0),
+            "instruction_key": "instruction",
+        })
 
-            samples.append({
-                "instruction": item["instruction"],
-                "response": item["response"],
-                "audio": audio,
-            })
-        except Exception as e:
-            print(f"[validate_finetune error] {type(e).__name__}: {e}")
-            continue
+    if use_fsd50k_cc0:
+        dataset_configs.append({
+            "name": "fsd50k_cc0",
+            "dataset": FSD50KCaptioned(dataset_id="Atotti/fsd50k-cc0-Qwen3-Omni-captioned", max_duration=30.0),
+            "instruction_key": "instruction",
+        })
 
-    if not samples:
-        print("[validate_finetune] No samples loaded, skipping validation")
+    if use_fsd50k_ccby:
+        dataset_configs.append({
+            "name": "fsd50k_ccby",
+            "dataset": FSD50KCaptioned(dataset_id="Atotti/fsd50k-ccby-Qwen3-Omni-captioned", max_duration=30.0),
+            "instruction_key": "instruction",
+        })
+
+    if use_librispeech:
+        dataset_configs.append({
+            "name": "librispeech",
+            "dataset": LibriSpeechASR(split="test.clean", max_duration=30.0),
+            "instruction_key": "instruction",
+        })
+
+    if not dataset_configs:
+        print("[validate_finetune] No datasets enabled, skipping validation")
         return
 
-    # Compute loss
-    total_loss = 0.0
-    num_batches = 0
+    # Evaluate each dataset
+    all_losses = {}
 
-    for i in range(0, len(samples), batch_size):
-        batch = samples[i:i + batch_size]
+    for config in dataset_configs:
+        dataset_name = config["name"]
+        dataset = config["dataset"]
 
-        encoder_inputs = encoder_processor(
-            [item["audio"].numpy() for item in batch],
-            return_tensors="pt",
-            return_attention_mask=True,
-            sampling_rate=16000,
-        ).to("cuda")
+        print(f"[validate_finetune] Evaluating {dataset_name}...")
 
-        decoder_inputs = decoder_processor(
-            [loss_prompt.format(IF_INSTRUCTION, item["response"]) for item in batch],
-            padding=True,
-            return_tensors="pt",
-        ).to("cuda")
+        # Load samples
+        samples = []
+        for i, item in enumerate(dataset):
+            if i >= val_samples:
+                break
+            try:
+                samples.append({
+                    "instruction": item["instruction"],
+                    "response": item["response"],
+                    "audio": item["audio"],
+                })
+            except Exception as e:
+                print(f"[validate_finetune/{dataset_name} error] {type(e).__name__}: {e}")
+                continue
 
-        with torch.no_grad(), torch.amp.autocast("cuda", dtype=torch.bfloat16):
-            loss = model(
+        if not samples:
+            print(f"[validate_finetune/{dataset_name}] No samples loaded, skipping")
+            continue
+
+        # Compute loss
+        total_loss = 0.0
+        num_batches = 0
+
+        for i in range(0, len(samples), batch_size):
+            batch = samples[i:i + batch_size]
+
+            encoder_inputs = encoder_processor(
+                [item["audio"].numpy() for item in batch],
+                return_tensors="pt",
+                return_attention_mask=True,
+                sampling_rate=16000,
+            ).to("cuda")
+
+            decoder_inputs = decoder_processor(
+                [loss_prompt.format(item["instruction"], item["response"]) for item in batch],
+                padding=True,
+                return_tensors="pt",
+            ).to("cuda")
+
+            with torch.no_grad(), torch.amp.autocast("cuda", dtype=torch.bfloat16):
+                loss = model(
+                    input_ids=decoder_inputs.input_ids,
+                    decoder_attention_mask=decoder_inputs.attention_mask,
+                    input_features=encoder_inputs.input_features,
+                    encoder_attention_mask=encoder_inputs.attention_mask,
+                )
+            total_loss += loss.item()
+            num_batches += 1
+
+        avg_loss = total_loss / num_batches if num_batches > 0 else 0.0
+        all_losses[dataset_name] = avg_loss
+        wandb.log({f"dev/loss/{dataset_name}": avg_loss}, step=step)
+
+        # Generate samples
+        sample_hyps = []
+        sample_refs = []
+        sample_instructions = []
+
+        for item in samples[:gen_samples]:
+            encoder_inputs = encoder_processor(
+                [item["audio"].numpy()],
+                return_tensors="pt",
+                return_attention_mask=True,
+                sampling_rate=16000,
+            ).to("cuda")
+
+            decoder_inputs = decoder_processor(
+                [gen_prompt.format(item["instruction"])],
+                return_tensors="pt",
+            ).to("cuda")
+
+            generated_ids = model.generate(
                 input_ids=decoder_inputs.input_ids,
                 decoder_attention_mask=decoder_inputs.attention_mask,
                 input_features=encoder_inputs.input_features,
                 encoder_attention_mask=encoder_inputs.attention_mask,
+                max_length=max_length,
+                do_sample=do_sample,
+                num_beams=num_beams,
+                pad_token_id=decoder_processor.eos_token_id,
             )
-        total_loss += loss.item()
-        num_batches += 1
+            hyp = decoder_processor.decode(generated_ids[0], skip_special_tokens=True)
+            sample_hyps.append(hyp)
+            sample_refs.append(item["response"])
+            sample_instructions.append(item["instruction"])
 
-    avg_loss = total_loss / num_batches if num_batches > 0 else 0.0
-    wandb.log({"dev/loss": avg_loss}, step=step)
+        # Log samples to wandb table
+        table = wandb.Table(columns=["Instruction", "Reference", "Prediction"])
+        for inst, ref, hyp in zip(sample_instructions, sample_refs, sample_hyps):
+            table.add_data(
+                inst[:100] + "..." if len(inst) > 100 else inst,
+                ref[:200] + "..." if len(ref) > 200 else ref,
+                hyp[:200] + "..." if len(hyp) > 200 else hyp,
+            )
+        wandb.log({f"dev/samples/{dataset_name}": table}, step=step)
 
-    # Generate samples (first 10)
-    gen_samples = samples[:10]
-    hyps = []
-    refs = []
-    instructions = []
+        print(f"[validate_finetune/{dataset_name}] loss={avg_loss:.4f}")
 
-    for item in gen_samples:
-        encoder_inputs = encoder_processor(
-            [item["audio"].numpy()],
-            return_tensors="pt",
-            return_attention_mask=True,
-            sampling_rate=16000,
-        ).to("cuda")
-
-        decoder_inputs = decoder_processor(
-            [gen_prompt.format(IF_INSTRUCTION)],
-            return_tensors="pt",
-        ).to("cuda")
-
-        generated_ids = model.generate(
-            input_ids=decoder_inputs.input_ids,
-            decoder_attention_mask=decoder_inputs.attention_mask,
-            input_features=encoder_inputs.input_features,
-            encoder_attention_mask=encoder_inputs.attention_mask,
-            max_length=max_length,
-            do_sample=do_sample,
-            num_beams=num_beams,
-            pad_token_id=decoder_processor.eos_token_id,
-        )
-        hyp = decoder_processor.decode(generated_ids[0], skip_special_tokens=True)
-        hyps.append(hyp)
-        refs.append(item["response"])
-        instructions.append(item["instruction"])
-
-    # Log to wandb
-    table = wandb.Table(columns=["Instruction", "Reference", "Prediction"])
-    for inst, ref, hyp in zip(instructions, refs, hyps):
-        table.add_data(inst[:100] + "..." if len(inst) > 100 else inst, ref[:200] + "..." if len(ref) > 200 else ref, hyp[:200] + "..." if len(hyp) > 200 else hyp)
-    wandb.log({"dev/finetune_samples": table}, step=step)
-
-    print(f"[validate_finetune] step={step}, loss={avg_loss:.4f}")
+    # Log overall average loss
+    if all_losses:
+        overall_avg_loss = sum(all_losses.values()) / len(all_losses)
+        wandb.log({"dev/loss": overall_avg_loss}, step=step)
+        print(f"[validate_finetune] step={step}, overall_loss={overall_avg_loss:.4f}")

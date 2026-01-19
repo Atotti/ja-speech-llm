@@ -28,7 +28,7 @@ TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 
 echo "Mode: Full decoder - 8 GPU (v2)"
 
-ARGS="--unfreeze-decoder --max-steps 1000000000 --batch-size 2 --grad-accumulation 8 --warmup-steps 100 --val-check-interval 1000 --lr 5e-5"
+ARGS="--unfreeze-decoder --max-steps 1000000000 --batch-size 2 --grad-accumulation 8 --warmup-steps 100 --val-check-interval 1000 --lr 1e-4"
 MODEL_DIR="models/v2/LlamaForSpeechLM-ja-Instruct-Full-${TIMESTAMP}"
 
 # Parse DATASET_WEIGHTS environment variable (convert "3,1,4,1,1,1" to "3 1 4 1 1 1")

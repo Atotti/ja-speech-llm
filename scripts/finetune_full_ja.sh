@@ -26,10 +26,10 @@ echo "Mode: Full decoder (adapter + full decoder ~8B params)"
 
 if [ -n "$RESUME_FROM" ]; then
     echo "Resuming from: $RESUME_FROM"
-    uv run python -c "from demo2_ja import finetune; finetune(resume_from='${RESUME_FROM}', unfreeze_decoder=True, lr=1e-4, max_steps=100000, batch_size=2, grad_accumulation=16, warmup_steps=100, val_check_interval=1000, model_dir='models/LlamaForSpeechLM-ja-Instruct-Full-${TIMESTAMP}')"
+    uv run python -c "from demo2_ja import finetune; finetune(resume_from='${RESUME_FROM}', unfreeze_decoder=True, lr=1e-4, max_steps=100000, batch_size=2, grad_accumulation=64, warmup_steps=100, val_check_interval=1000, model_dir='models/LlamaForSpeechLM-ja-Instruct-Full-${TIMESTAMP}')"
 elif [ -n "$MODEL_ID" ]; then
     echo "Starting from: $MODEL_ID"
-    uv run python -c "from demo2_ja import finetune; finetune(model_id='${MODEL_ID}', unfreeze_decoder=True, lr=1e-4, max_steps=100000, batch_size=2, grad_accumulation=16, warmup_steps=100, val_check_interval=1000, model_dir='models/LlamaForSpeechLM-ja-Instruct-Full-${TIMESTAMP}')"
+    uv run python -c "from demo2_ja import finetune; finetune(model_id='${MODEL_ID}', unfreeze_decoder=True, lr=1e-4, max_steps=100000, batch_size=2, grad_accumulation=64, warmup_steps=100, val_check_interval=1000, model_dir='models/LlamaForSpeechLM-ja-Instruct-Full-${TIMESTAMP}')"
 else
     echo "Error: MODEL_ID or RESUME_FROM is required"
     exit 1

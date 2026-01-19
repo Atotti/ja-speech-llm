@@ -40,8 +40,8 @@ else
     echo "Dataset weights: default"
 fi
 
-# Parse LR environment variable (default: 5e-5 for full decoder)
-LR_VALUE=${LR:-5e-5}
+# Parse LR environment variable (default: 1e-4 for full decoder)
+LR_VALUE=${LR:-1e-4}
 echo "Learning rate: ${LR_VALUE}"
 
 # Parse ENCODER_ID environment variable (for fresh model creation)

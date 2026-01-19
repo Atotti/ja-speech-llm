@@ -1,6 +1,7 @@
 """Finetune functions for speech LLM."""
 
 import re
+from functools import partial
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -30,7 +31,7 @@ def finetune(
     encoder_id: str = "openai/whisper-large-v3",
     decoder_id: str = "/groups/gch51701/Team031/model/pretrained/v4-8b-decay2m-ipt_v3.1-instruct4",
     batch_size: int = 4,
-    lr: float = 1e-3,
+    lr: float = 1e-4,
     epoch: int = 5,
     warmup_steps: int = 10,
     init_grad_scale: float = 1e32,
@@ -58,7 +59,7 @@ def finetune(
     use_fsd50k_cc0: bool = True,
     use_fsd50k_ccby: bool = True,
     use_librispeech: bool = True,
-    use_text_multiturn: bool = False,  # Text-only dataset for capability preservation
+    use_text_multiturn: bool = True,  # Text-only dataset for capability preservation
     dataset_weights: List[int] = None,  # Default: [3, 1, 4, 1, 1, 1, 0] when all enabled
     # Multi-GPU
     use_accelerate: bool = False,
@@ -294,8 +295,8 @@ def finetune(
         raise ValueError("At least one dataset must be enabled")
 
     # Use weights or default weights
-    # Default: [3, 1, 4, 1, 1, 1, 0] for [magpie, multiturn, reazon, fsd50k_cc0, fsd50k_ccby, librispeech, text_multiturn]
-    default_weights = [3, 1, 4, 1, 1, 1, 0]
+    # Default: [6, 2, 9, 1, 1, 1, 1] for [magpie, multiturn, reazon, fsd50k_cc0, fsd50k_ccby, librispeech, text_multiturn]
+    default_weights = [6, 2, 9, 1, 1, 1, 1]
     if dataset_weights:
         weights = dataset_weights
     elif len(datasets) == 7:
@@ -429,6 +430,17 @@ def finetune(
         dataset, batch_size, collate_fn=collate_fn
     )
 
+    # Create validate_fn with dataset config
+    validate_fn = partial(
+        validate_finetune,
+        use_spoken_magpie=use_spoken_magpie,
+        use_spoken_multiturn=use_spoken_multiturn,
+        use_reazon_sft=use_reazon_sft,
+        use_fsd50k_cc0=use_fsd50k_cc0,
+        use_fsd50k_ccby=use_fsd50k_ccby,
+        use_librispeech=use_librispeech,
+    )
+
     _train(
         model,
         encoder_processor,
@@ -444,7 +456,7 @@ def finetune(
         max_steps=max_steps,
         val_check_interval=val_check_interval,
         model_dir=model_dir,
-        validate_fn=validate_finetune,
+        validate_fn=validate_fn,
         start_step=start_step,
         use_lora=use_lora,
         accelerator=accelerator,
