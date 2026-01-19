@@ -30,7 +30,7 @@ def main() -> None:
     parser.add_argument("--clip-grad-norm", type=float, default=1.0)
     parser.add_argument("--grad-accumulation", type=int, default=16)
     parser.add_argument("--max-steps", type=int, default=None)
-    parser.add_argument("--val-check-interval", type=int, default=1000)
+    parser.add_argument("--val-check-interval-samples", type=int, default=10000)
     parser.add_argument("--resume-from", default=None)
     parser.add_argument("--start-step", type=int, default=0)
     # Decoder training options
@@ -51,7 +51,7 @@ def main() -> None:
         clip_grad_norm=args.clip_grad_norm,
         grad_accumulation=args.grad_accumulation,
         max_steps=args.max_steps,
-        val_check_interval=args.val_check_interval,
+        val_check_interval_samples=args.val_check_interval_samples,
         resume_from=args.resume_from,
         start_step=args.start_step,
         use_lora=args.use_lora,

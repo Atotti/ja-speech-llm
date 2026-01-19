@@ -27,18 +27,18 @@ TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 
 echo "Mode: Full decoder - 8 GPU (v2)"
 
-ARGS="--unfreeze-decoder --max-steps 1000000000 --batch-size 1 --grad-accumulation 16 --warmup-steps 100 --val-check-interval 1000 --lr 5e-5"
+ARGS="--unfreeze-decoder --max-steps 1000000000 --batch-size 1 --grad-accumulation 16 --warmup-steps 100 --val-check-interval-samples 10000 --lr 5e-5"
 MODEL_DIR="models/v2/LlamaForSpeechLM-ja-Instruct-Full-${TIMESTAMP}"
 
 if [ -n "$RESUME_FROM" ]; then
-    echo "Resuming from: $RESUME_FROM"
-    ARGS="$ARGS --resume-from $RESUME_FROM --model-dir $MODEL_DIR"
+  echo "Resuming from: $RESUME_FROM"
+  ARGS="$ARGS --resume-from $RESUME_FROM --model-dir $MODEL_DIR"
 elif [ -n "$MODEL_ID" ]; then
-    echo "Starting from: $MODEL_ID"
-    ARGS="$ARGS --model-id $MODEL_ID --model-dir $MODEL_DIR"
+  echo "Starting from: $MODEL_ID"
+  ARGS="$ARGS --model-id $MODEL_ID --model-dir $MODEL_DIR"
 else
-    echo "Error: MODEL_ID or RESUME_FROM is required"
-    exit 1
+  echo "Error: MODEL_ID or RESUME_FROM is required"
+  exit 1
 fi
 
 echo "Arguments: $ARGS"

@@ -28,17 +28,17 @@ TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 echo "Mode: Full decoder (adapter + full decoder ~8B params) (v2)"
 
 if [ -n "$RESUME_FROM" ]; then
-    echo "Resuming from: $RESUME_FROM"
-    ARGS="--resume-from $RESUME_FROM"
+  echo "Resuming from: $RESUME_FROM"
+  ARGS="--resume-from $RESUME_FROM"
 elif [ -n "$MODEL_ID" ]; then
-    echo "Starting from: $MODEL_ID"
-    ARGS="--model-id $MODEL_ID"
+  echo "Starting from: $MODEL_ID"
+  ARGS="--model-id $MODEL_ID"
 else
-    echo "Error: MODEL_ID or RESUME_FROM is required"
-    exit 1
+  echo "Error: MODEL_ID or RESUME_FROM is required"
+  exit 1
 fi
 
-COMMON_ARGS="--unfreeze-decoder --max-steps 1000000000 --batch-size 2 --grad-accumulation 64 --warmup-steps 100 --val-check-interval 1000 --lr 5e-5"
+COMMON_ARGS="--unfreeze-decoder --max-steps 1000000000 --batch-size 2 --grad-accumulation 64 --warmup-steps 100 --val-check-interval-samples 10000 --lr 5e-5"
 MODEL_DIR="models/v2/LlamaForSpeechLM-ja-Instruct-Full-${TIMESTAMP}"
 
 uv run accelerate launch --num_processes 1 scripts/v2/finetune_accelerate.py $COMMON_ARGS $ARGS --model-dir $MODEL_DIR

@@ -29,17 +29,17 @@ TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 echo "Mode: LoRA (adapter + LoRA) (v2)"
 
 if [ -n "$RESUME_FROM" ]; then
-    echo "Resuming from: $RESUME_FROM"
-    ARGS="--resume-from $RESUME_FROM"
+  echo "Resuming from: $RESUME_FROM"
+  ARGS="--resume-from $RESUME_FROM"
 elif [ -n "$MODEL_ID" ]; then
-    echo "Starting from: $MODEL_ID"
-    ARGS="--model-id $MODEL_ID"
+  echo "Starting from: $MODEL_ID"
+  ARGS="--model-id $MODEL_ID"
 else
-    echo "Error: MODEL_ID or RESUME_FROM is required"
-    exit 1
+  echo "Error: MODEL_ID or RESUME_FROM is required"
+  exit 1
 fi
 
-COMMON_ARGS="--use-lora --max-steps 1000000000 --batch-size 4 --grad-accumulation 32 --warmup-steps 100 --val-check-interval 1000 --lr 1e-4"
+COMMON_ARGS="--use-lora --max-steps 1000000000 --batch-size 4 --grad-accumulation 32 --warmup-steps 100 --val-check-interval-samples 10000 --lr 1e-4"
 MODEL_DIR="models/v2/LlamaForSpeechLM-ja-Instruct-LoRA-${TIMESTAMP}"
 
 uv run accelerate launch --num_processes 1 scripts/v2/finetune_accelerate.py $COMMON_ARGS $ARGS --model-dir $MODEL_DIR

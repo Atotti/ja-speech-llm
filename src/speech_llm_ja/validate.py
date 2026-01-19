@@ -20,6 +20,7 @@ def validate(
     num_beams: int = 1,
     data_dir="data",
     aac_val_samples: int = 100,
+    train_metrics: dict | None = None,
 ):
     """Validation for pretrain: compute CER (ASR) and BLEU (AAC)."""
 
@@ -163,6 +164,15 @@ def validate(
 
     # wandb log
     wandb.log({"dev/cer": cer, "dev/bleu": bleu}, step=step)
+    if train_metrics:
+        wandb.log(
+            {
+                "dev/consumed_samples": train_metrics.get("consumed_samples"),
+                "dev/global_step": train_metrics.get("global_step"),
+                "dev/train_loss": train_metrics.get("train_loss"),
+            },
+            step=step,
+        )
 
     # Log sample predictions as table
     asr_table = wandb.Table(columns=["Reference", "Prediction"])
@@ -188,6 +198,7 @@ def validate_finetune(
     data_dir="data",  # unused, kept for compatibility
     val_samples: int = 50,
     dataset_id: str = "Atotti/spoken-magpie-ja",
+    train_metrics: dict | None = None,
 ):
     """Validation for finetune: compute loss and generate samples on spoken-magpie-ja."""
     import numpy as np
@@ -284,6 +295,15 @@ def validate_finetune(
 
     avg_loss = total_loss / num_batches if num_batches > 0 else 0.0
     wandb.log({"dev/loss": avg_loss}, step=step)
+    if train_metrics:
+        wandb.log(
+            {
+                "dev/consumed_samples": train_metrics.get("consumed_samples"),
+                "dev/global_step": train_metrics.get("global_step"),
+                "dev/train_loss": train_metrics.get("train_loss"),
+            },
+            step=step,
+        )
 
     # Generate samples (first 10)
     gen_samples = samples[:10]

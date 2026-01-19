@@ -33,7 +33,7 @@ def finetune(
     clip_grad_norm: float = 1.0,
     grad_accumulation: int = 128,
     max_steps: int = None,
-    val_check_interval: int = None,
+    val_check_interval_samples: int = None,
     wandb_project: str = "speech-llm-ja-sft-harui",
     max_duration: float = 30.0,
     max_response_length: int = 2048,
@@ -350,7 +350,7 @@ def finetune(
         data_dir="data",
         model_dir=model_dir,
         max_steps=max_steps,
-        val_check_interval=val_check_interval,
+        val_check_interval_samples=val_check_interval_samples,
         start_step=start_step,
     )
     validation_config = ValidationConfig()

@@ -31,7 +31,7 @@ class TrainingDataConfig:
     data_dir: str = "data"
     model_dir: str = "models/LlamaForSpeechLM-ja"
     max_steps: int = None
-    val_check_interval: int = None
+    val_check_interval_samples: int = None
     start_step: int = 0
 
 
@@ -105,6 +105,19 @@ def _train(
     is_main_process = accelerator.is_main_process
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=optimizer_config.lr)
+    val_check_interval_samples = training_data_config.val_check_interval_samples
+    if val_check_interval_samples is not None:
+        consumed_at_start = (
+            training_data_config.start_step
+            * training_data_config.batch_size
+            * optimizer_config.grad_accumulation
+            * accelerator.num_processes
+        )
+        next_val_samples = (
+            (consumed_at_start // val_check_interval_samples) + 1
+        ) * val_check_interval_samples
+    else:
+        next_val_samples = None
 
     # learning rate scheduler
     # max_steps is additional steps from start_step
@@ -133,6 +146,7 @@ def _train(
 
     # Note: GradScaler is not needed for bfloat16 (same exponent range as float32)
     step = training_data_config.start_step
+    last_train_metrics = None
 
     # configなどを記録しておく〜これこそが実験管理〜
     if is_main_process:
@@ -141,7 +155,10 @@ def _train(
             "training_data": asdict(training_data_config),
             "validation": asdict(validation_config),
         }
-        print(f"Training config: optimizer: {optimizer_config}, training_data: {training_data_config}, validation: {validation_config}", flush=True)
+        print(
+            f"Training config: optimizer: {optimizer_config}, training_data: {training_data_config}, validation: {validation_config}",
+            flush=True,
+        )
         wandb.config.update(config_payload, allow_val_change=True)
 
     for epoch in range(1, training_data_config.epoch + 1):
@@ -190,6 +207,11 @@ def _train(
 
                 avg_loss = accum_loss / optimizer_config.grad_accumulation
                 accum_loss = None
+                last_train_metrics = {
+                    "consumed_samples": consumed_samples,
+                    "global_step": step,
+                    "train_loss": avg_loss.item(),
+                }
 
                 # wandb log (main process only)
                 if is_main_process:
@@ -212,8 +234,8 @@ def _train(
 
                 # validation at interval (main process only)
                 if (
-                    training_data_config.val_check_interval is not None
-                    and step % training_data_config.val_check_interval == 0
+                    val_check_interval_samples is not None
+                    and consumed_samples >= next_val_samples
                 ):
                     if is_main_process:
                         # Get unwrapped model for validation
@@ -229,10 +251,12 @@ def _train(
                             validation_config.do_sample,
                             validation_config.num_beams,
                             training_data_config.data_dir,
+                            train_metrics=last_train_metrics,
                         )
                         # save checkpoint with step number
                         checkpoint_dir = f"{training_data_config.model_dir}-step{step}"
                         _save_checkpoint(model, checkpoint_dir, use_lora, accelerator)
+                        next_val_samples += val_check_interval_samples
 
                     # Sync all processes after validation
                     accelerator.wait_for_everyone()
@@ -246,8 +270,8 @@ def _train(
                 if training_data_config.max_steps is not None and step >= target_step:
                     break
 
-        # validation at epoch end (if val_check_interval is not set)
-        if training_data_config.val_check_interval is None and is_main_process:
+        # validation at epoch end (if val_check_interval_samples is not set)
+        if val_check_interval_samples is None and is_main_process:
             eval_model = accelerator.unwrap_model(model)
             _validate_fn = validate_fn or validate
             _validate_fn(
@@ -260,6 +284,7 @@ def _train(
                 validation_config.do_sample,
                 validation_config.num_beams,
                 training_data_config.data_dir,
+                train_metrics=last_train_metrics,
             )
 
         # save checkpoint with step number at epoch end
@@ -290,7 +315,7 @@ def train(
     data_dir="data",
     model_dir="models/LlamaForSpeechLM-ja",
     max_steps: int = None,
-    val_check_interval: int = None,
+    val_check_interval_samples: int = None,
     wandb_project: str = "speech-llm-ja-harui",
     resume_from: str = None,
     start_step: int = 0,
@@ -331,7 +356,7 @@ def train(
                 "warmup_steps": warmup_steps,
                 "grad_accumulation": grad_accumulation,
                 "max_steps": max_steps,
-                "val_check_interval": val_check_interval,
+                "val_check_interval_samples": val_check_interval_samples,
                 "resume_from": resume_from,
                 "start_step": start_step,
                 "unfreeze_decoder": unfreeze_decoder,
@@ -463,7 +488,7 @@ def train(
         data_dir=data_dir,
         model_dir=model_dir,
         max_steps=max_steps,
-        val_check_interval=val_check_interval,
+        val_check_interval_samples=val_check_interval_samples,
         start_step=start_step,
     )
     validation_config = ValidationConfig(
