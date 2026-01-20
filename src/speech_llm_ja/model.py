@@ -42,9 +42,8 @@ class Adapter(nn.Module):
         return hidden_states
 
 
-# Audio marker token IDs (using reserved tokens from the end)
-AUDIO_START_TOKEN_ID = 351  # <|reserved_343|>
-AUDIO_END_TOKEN_ID = 350  # <|reserved_342|>
+# Audio token ID (using reserved tokens from the end)
+AUDIO_TOKEN_ID = 351  # <|reserved_343|>
 
 
 class LlamaForSpeechLMConfig(PretrainedConfig):
@@ -117,81 +116,45 @@ class LlamaForSpeechLM(PreTrainedModel):
         encoder_attention_mask: Optional[torch.LongTensor] = None,
     ):
         """
-        Embed input_ids and optionally insert audio embeddings between audio markers.
+        Embed input_ids and optionally replace audio token placeholders with audio embeddings.
 
-        Prompt construction is handled by SpeechLlamaProcessor. Audio embeddings are
-        inserted between <|reserved_343|> and <|reserved_342|> tokens.
+        Prompt construction is handled by SpeechLlamaProcessor. Audio placeholders use
+        <|reserved_343|> tokens, repeated to match the audio embedding length.
         """
         inputs_embeds = self.decoder.get_input_embeddings()(input_ids)
 
         if input_features is not None:
-            # Audio + text: insert audio embeddings between markers
+            if encoder_attention_mask is None:
+                encoder_attention_mask = torch.ones(
+                    (input_features.shape[0], input_features.shape[-1]),
+                    device=input_features.device,
+                    dtype=torch.long,
+                )
             encoder_outputs = self.encoder(input_features)
             encoder_hidden_states = encoder_outputs[0]
 
+            encoder_hidden_states = self.adapter(encoder_hidden_states)
             lengths = self.encoder._get_feat_extract_output_lengths(
-                encoder_attention_mask.sum(dim=1, keepdim=True)
+                encoder_attention_mask.sum(dim=1)
             )
             lengths = lengths // self.config.adapter_kernel_size
-            max_len = lengths.max()
 
-            encoder_hidden_states = self.adapter(encoder_hidden_states)
-            encoder_hidden_states = encoder_hidden_states[:, :max_len]
-
-            # Find audio_start marker position (insert audio AFTER this token)
-            # Format: ... <|reserved_343|><|reserved_342|> ...
-            #                            ^ insert audio here
-            batch_size = input_ids.shape[0]
-            audio_start_positions = (input_ids == AUDIO_START_TOKEN_ID).nonzero(
-                as_tuple=True
-            )[1]
-
-            if len(audio_start_positions) == batch_size:
-                # All samples have the marker - insert audio after <|reserved_343|>
-                insert_pos = (
-                    audio_start_positions[0].item() + 1
-                )  # Assume same position in batch
-
-                # Split embeddings: [before + audio_start] | [audio_end + rest]
-                embeds_before = inputs_embeds[
-                    :, :insert_pos
-                ]  # includes <|reserved_343|>
-                embeds_after = inputs_embeds[
-                    :, insert_pos:
-                ]  # starts with <|reserved_342|>
-
-                # Concatenate: [before + audio_start] + [audio] + [audio_end + rest]
-                inputs_embeds = torch.cat(
-                    (embeds_before, encoder_hidden_states, embeds_after), dim=1
+            audio_segments = []
+            for idx, length in enumerate(lengths.tolist()):
+                if length > 0:
+                    audio_segments.append(encoder_hidden_states[idx, :length])
+            if audio_segments:
+                audio_embeds = torch.cat(audio_segments, dim=0)
+                audio_token_mask = (input_ids == AUDIO_TOKEN_ID).unsqueeze(-1)
+                if audio_token_mask.sum().item() != audio_embeds.shape[0]:
+                    raise ValueError(
+                        "Audio token count does not match audio embeddings length."
+                    )
+                inputs_embeds = inputs_embeds.masked_scatter(
+                    audio_token_mask.to(inputs_embeds.device),
+                    audio_embeds.to(inputs_embeds.device),
                 )
-
-                # Build attention mask
-                mask_before = decoder_attention_mask[:, :insert_pos]
-                mask_after = decoder_attention_mask[:, insert_pos:]
-                audio_mask = (
-                    torch.arange(
-                        encoder_hidden_states.shape[1],
-                        device=decoder_attention_mask.device,
-                    ).unsqueeze(0)
-                    < lengths
-                ).long()
-                attention_mask = torch.cat((mask_before, audio_mask, mask_after), dim=1)
-            else:
-                # Fallback: prepend audio (legacy behavior)
-                inputs_embeds = torch.cat((encoder_hidden_states, inputs_embeds), dim=1)
-                attention_mask = torch.cat(
-                    (
-                        (
-                            torch.arange(
-                                encoder_hidden_states.shape[1],
-                                device=decoder_attention_mask.device,
-                            ).unsqueeze(0)
-                            < lengths
-                        ).long(),
-                        decoder_attention_mask,
-                    ),
-                    dim=1,
-                )
+            attention_mask = decoder_attention_mask
         else:
             # Text-only
             attention_mask = decoder_attention_mask
@@ -219,54 +182,12 @@ class LlamaForSpeechLM(PreTrainedModel):
         )
 
         if labels is None:
-            # Auto-generate labels: mask audio positions with -100
-            audio_len = inputs_embeds.shape[1] - input_ids.shape[1]
-            if audio_len > 0 and input_features is not None:
-                # Find insert position and create labels with -100 for audio
-                audio_start_positions = (input_ids == AUDIO_START_TOKEN_ID).nonzero(
-                    as_tuple=True
-                )[1]
-                if len(audio_start_positions) == input_ids.shape[0]:
-                    insert_pos = audio_start_positions[0].item() + 1
-                    labels_before = input_ids[:, :insert_pos]
-                    labels_after = input_ids[:, insert_pos:]
-                    audio_labels = torch.full(
-                        (input_ids.shape[0], audio_len),
-                        -100,
-                        dtype=input_ids.dtype,
-                        device=input_ids.device,
-                    )
-                    labels = torch.cat(
-                        (labels_before, audio_labels, labels_after), dim=1
-                    )
-                else:
-                    # Fallback: prepend -100 for audio
-                    labels = F.pad(input_ids, (audio_len, 0), value=-100)
-            else:
-                labels = input_ids
-        else:
-            # If labels are text-only, expand them to match inserted audio embeddings.
-            if input_features is not None and labels.shape[1] == input_ids.shape[1]:
-                audio_len = inputs_embeds.shape[1] - input_ids.shape[1]
-                if audio_len > 0:
-                    audio_start_positions = (input_ids == AUDIO_START_TOKEN_ID).nonzero(
-                        as_tuple=True
-                    )[1]
-                    if len(audio_start_positions) == input_ids.shape[0]:
-                        insert_pos = audio_start_positions[0].item() + 1
-                        labels_before = labels[:, :insert_pos]
-                        labels_after = labels[:, insert_pos:]
-                        audio_labels = torch.full(
-                            (input_ids.shape[0], audio_len),
-                            -100,
-                            dtype=labels.dtype,
-                            device=labels.device,
-                        )
-                        labels = torch.cat(
-                            (labels_before, audio_labels, labels_after), dim=1
-                        )
-                    else:
-                        labels = F.pad(labels, (audio_len, 0), value=-100)
+            labels = input_ids.clone()
+            labels[decoder_attention_mask == 0] = -100
+
+        if input_features is not None:
+            labels = labels.clone()
+            labels[input_ids == AUDIO_TOKEN_ID] = -100
 
         decoder_outputs = self.decoder(
             inputs_embeds=inputs_embeds, attention_mask=attention_mask, labels=labels

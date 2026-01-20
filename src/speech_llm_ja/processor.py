@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 import torch
 from transformers import AutoProcessor, AutoTokenizer, ProcessorMixin
 
-from .model import AUDIO_END_TOKEN_ID, AUDIO_START_TOKEN_ID
+from .model import AUDIO_TOKEN_ID
 
 
 @dataclass
@@ -18,7 +18,8 @@ class SpeechLlamaProcessorConfig:
     """Lightweight config for SpeechLlamaProcessor."""
 
     system_prompt: str = "あなたは音声を理解できるAIアシスタントです。"
-    audio_marker: str = "<|reserved_343|><|reserved_342|>"
+    audio_token: str = "<|reserved_343|>"
+    adapter_kernel_size: int = 4
     use_chat_template: bool = True
 
 
@@ -48,10 +49,13 @@ class SpeechLlamaProcessor(ProcessorMixin):
             self.config.use_chat_template and self.tokenizer.chat_template is not None
         )
 
-        # Ensure marker string matches model-side reserved token IDs.
-        self._audio_marker = self.config.audio_marker
-        if self._audio_marker is None:
-            self._audio_marker = "<|reserved_343|><|reserved_342|>"
+        self._audio_token = self.config.audio_token or "<|reserved_343|>"
+        self._audio_token_id = self.tokenizer.convert_tokens_to_ids(self._audio_token)
+        if self._audio_token_id != AUDIO_TOKEN_ID:
+            raise ValueError(
+                "audio_token_id mismatch: tokenizer returned"
+                f" {self._audio_token_id}, expected {AUDIO_TOKEN_ID}"
+            )
 
     @classmethod
     def from_pretrained(
@@ -86,6 +90,9 @@ class SpeechLlamaProcessor(ProcessorMixin):
         config = None
         if config_path.exists():
             config_data = json.loads(config_path.read_text(encoding="utf-8"))
+            if "audio_marker" in config_data and "audio_token" not in config_data:
+                config_data["audio_token"] = "<|reserved_343|>"
+                config_data.pop("audio_marker", None)
             config = SpeechLlamaProcessorConfig(**config_data)
         encoder_processor = AutoProcessor.from_pretrained(save_path / "encoder")
         tokenizer = AutoTokenizer.from_pretrained(save_path / "decoder")
@@ -110,9 +117,9 @@ class SpeechLlamaProcessor(ProcessorMixin):
 
     def _normalize_messages(
         self, messages: Sequence[Dict[str, Any]]
-    ) -> Tuple[List[Dict[str, str]], int]:
+    ) -> Tuple[List[Dict[str, str]], List[Optional[Any]]]:
         normalized: List[Dict[str, str]] = []
-        audio_marker_count = 0
+        audio_payloads: List[Optional[Any]] = []
         for msg in messages:
             role = msg.get("role")
             content = msg.get("content", "")
@@ -123,15 +130,15 @@ class SpeechLlamaProcessor(ProcessorMixin):
                     if part_type == "text":
                         parts.append(part.get("text", ""))
                     elif part_type == "audio":
-                        parts.append(self._audio_marker)
-                        audio_marker_count += 1
+                        parts.append(self._audio_token)
+                        audio_payloads.append(part.get("audio"))
                     else:
                         raise ValueError(f"Unsupported content type: {part_type}")
                 content_text = "".join(parts)
             else:
                 content_text = str(content)
             normalized.append({"role": role, "content": content_text})
-        return normalized, audio_marker_count
+        return normalized, audio_payloads
 
     def _ensure_system_prompt(
         self, messages: List[Dict[str, Any]]
@@ -149,24 +156,8 @@ class SpeechLlamaProcessor(ProcessorMixin):
         self,
         messages: Sequence[Dict[str, Any]],
         add_generation_prompt: bool,
-        audio_expected: bool,
     ) -> str:
-        normalized_messages, audio_marker_count = self._normalize_messages(messages)
-        normalized_messages = self._ensure_system_prompt(normalized_messages)
-
-        if not audio_expected and audio_marker_count > 0:
-            raise ValueError("Audio markers provided but no audio was passed.")
-
-        if audio_expected and audio_marker_count == 0:
-            for msg in normalized_messages:
-                if msg.get("role") == "user":
-                    msg["content"] = f"{self._audio_marker}{msg['content']}"
-                    audio_marker_count = 1
-                    break
-
-        if audio_marker_count > 1:
-            raise ValueError("Only one audio segment per sample is supported.")
-
+        normalized_messages = self._ensure_system_prompt(list(messages))
         if self.config.use_chat_template:
             return self.tokenizer.apply_chat_template(
                 normalized_messages,
@@ -183,16 +174,99 @@ class SpeechLlamaProcessor(ProcessorMixin):
                 user_text = msg.get("content", "")
             elif msg.get("role") == "assistant":
                 assistant_text = msg.get("content", "")
-        if self._audio_marker in user_text:
-            instruction = user_text.replace(self._audio_marker, "", 1)
-            marker = self._audio_marker
-        else:
-            instruction = user_text
-            marker = self._audio_marker if audio_expected else ""
+        instruction = user_text.replace(self._audio_token, "")
+        marker = self._audio_token if self._audio_token in user_text else ""
         prompt = f"{system}\n\n{marker}### 指示:\n{instruction}\n\n### 応答:\n"
         if not add_generation_prompt and assistant_text:
             prompt = f"{prompt}{assistant_text}{self.tokenizer.eos_token}"
         return prompt
+
+    def _compute_audio_token_lengths(
+        self, feature_attention_mask: torch.Tensor
+    ) -> List[int]:
+        feature_lengths = feature_attention_mask.sum(dim=1)
+        encoder_lengths = (feature_lengths - 1) // 2 + 1
+        audio_token_lengths = (
+            encoder_lengths // self.config.adapter_kernel_size
+        ).tolist()
+        return [int(length) for length in audio_token_lengths]
+
+    def _expand_audio_tokens(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        labels: Optional[torch.Tensor],
+        audio_token_lengths: List[List[int]],
+    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+        expanded_ids: List[List[int]] = []
+        expanded_masks: List[List[int]] = []
+        expanded_labels: List[List[int]] = []
+        pad_token_id = self.tokenizer.pad_token_id
+
+        for batch_idx in range(input_ids.shape[0]):
+            token_lengths = list(audio_token_lengths[batch_idx])
+            token_iter = iter(token_lengths)
+            ids_row = input_ids[batch_idx].tolist()
+            mask_row = attention_mask[batch_idx].tolist()
+            labels_row = labels[batch_idx].tolist() if labels is not None else None
+
+            new_ids: List[int] = []
+            new_mask: List[int] = []
+            new_labels: List[int] = []
+            for pos, (token, mask) in enumerate(zip(ids_row, mask_row)):
+                if mask == 0:
+                    break
+                if token == self._audio_token_id:
+                    try:
+                        length = next(token_iter)
+                    except StopIteration as exc:
+                        raise ValueError(
+                            "Too few audio lengths for placeholders."
+                        ) from exc
+                    new_ids.extend([self._audio_token_id] * length)
+                    new_mask.extend([1] * length)
+                    if labels_row is not None:
+                        new_labels.extend([-100] * length)
+                else:
+                    new_ids.append(token)
+                    new_mask.append(mask)
+                    if labels_row is not None:
+                        new_labels.append(labels_row[pos])
+
+            if next(token_iter, None) is not None:
+                raise ValueError("Audio lengths remain after expansion.")
+
+            expanded_ids.append(new_ids)
+            expanded_masks.append(new_mask)
+            if labels_row is not None:
+                expanded_labels.append(new_labels)
+
+        max_len = max(len(row) for row in expanded_ids)
+        output_ids = torch.full(
+            (len(expanded_ids), max_len),
+            pad_token_id,
+            dtype=input_ids.dtype,
+        )
+        output_mask = torch.zeros(
+            (len(expanded_masks), max_len), dtype=attention_mask.dtype
+        )
+        output_labels = None
+        if labels is not None:
+            output_labels = torch.full(
+                (len(expanded_labels), max_len),
+                -100,
+                dtype=labels.dtype,
+            )
+
+        for i, row in enumerate(expanded_ids):
+            output_ids[i, : len(row)] = torch.tensor(row, dtype=input_ids.dtype)
+            output_mask[i, : len(row)] = 1
+            if output_labels is not None:
+                output_labels[i, : len(row)] = torch.tensor(
+                    expanded_labels[i], dtype=labels.dtype
+                )
+
+        return output_ids, output_mask, output_labels
 
     def __call__(
         self,
@@ -210,21 +284,63 @@ class SpeechLlamaProcessor(ProcessorMixin):
             messages_batch = list(messages)  # type: ignore[arg-type]
 
         batch_size = len(messages_batch)
+        audios_per_sample: List[List[Any]] = []
         if audios is None:
-            audios = [None] * batch_size
-        if len(audios) != batch_size:
-            raise ValueError("audios length must match messages batch size")
+            audios_per_sample = [[] for _ in range(batch_size)]
+        else:
+            if len(audios) != batch_size:
+                raise ValueError("audios length must match messages batch size")
+            for audio_item in audios:
+                if audio_item is None:
+                    audios_per_sample.append([])
+                elif isinstance(audio_item, (list, tuple)):
+                    audios_per_sample.append(list(audio_item))
+                else:
+                    audios_per_sample.append([audio_item])
 
-        has_audio_flags = [audio is not None for audio in audios]
-        if any(has_audio_flags) and not all(has_audio_flags):
-            raise ValueError("Mixed audio/text batches are not supported.")
+        prompt_texts: List[str] = []
+        flat_audios: List[Any] = []
+        audio_token_lengths_by_sample: List[List[int]] = []
 
-        prompt_texts = [
-            self._build_prompt_text(
-                msgs, add_generation_prompt, audio_expected=any(has_audio_flags)
+        for batch_idx, msgs in enumerate(messages_batch):
+            normalized_messages, audio_payloads = self._normalize_messages(msgs)
+            normalized_messages = self._ensure_system_prompt(normalized_messages)
+
+            if (
+                any(payload is not None for payload in audio_payloads)
+                and audios is not None
+            ):
+                raise ValueError("Audio provided both in messages and audios argument.")
+
+            if audios_per_sample[batch_idx]:
+                if not audio_payloads:
+                    raise ValueError(
+                        "audios provided but no audio placeholders in messages."
+                    )
+                fill_iter = iter(audios_per_sample[batch_idx])
+                filled_payloads: List[Any] = []
+                for payload in audio_payloads:
+                    if payload is not None:
+                        raise ValueError(
+                            "Audio provided in messages and audios argument."
+                        )
+                    try:
+                        filled_payloads.append(next(fill_iter))
+                    except StopIteration as exc:
+                        raise ValueError(
+                            "Not enough audios provided for placeholders."
+                        ) from exc
+                if list(fill_iter):
+                    raise ValueError("Too many audios provided for placeholders.")
+                audio_payloads = filled_payloads
+            else:
+                if any(payload is None for payload in audio_payloads):
+                    raise ValueError("Audio placeholders missing audio payloads.")
+
+            flat_audios.extend(audio_payloads)
+            prompt_texts.append(
+                self._build_prompt_text(normalized_messages, add_generation_prompt)
             )
-            for msgs in messages_batch
-        ]
 
         tokenized = self.tokenizer(
             prompt_texts,
@@ -242,23 +358,48 @@ class SpeechLlamaProcessor(ProcessorMixin):
             labels[tokenized.attention_mask == 0] = -100
             result["labels"] = labels
 
-        if all(has_audio_flags):
-            audio_arrays = [self._prepare_audio(audio) for audio in audios]
+        if flat_audios:
+            audio_arrays = [self._prepare_audio(audio) for audio in flat_audios]
             encoder_inputs = self.encoder_processor(
                 audio_arrays,
                 return_tensors=return_tensors,
                 return_attention_mask=True,
                 sampling_rate=sampling_rate,
             )
+
+            audio_token_lengths = self._compute_audio_token_lengths(
+                encoder_inputs.attention_mask
+            )
+            offset = 0
+            for msgs in messages_batch:
+                normalized_messages, audio_payloads = self._normalize_messages(msgs)
+                audio_count = len(audio_payloads)
+                audio_token_lengths_by_sample.append(
+                    audio_token_lengths[offset : offset + audio_count]
+                )
+                offset += audio_count
+
+            expanded_ids, expanded_mask, expanded_labels = self._expand_audio_tokens(
+                tokenized.input_ids,
+                tokenized.attention_mask,
+                result.get("labels"),
+                audio_token_lengths_by_sample,
+            )
+
+            result["input_ids"] = expanded_ids
+            result["decoder_attention_mask"] = expanded_mask
+            if expanded_labels is not None:
+                result["labels"] = expanded_labels
+
             result["input_features"] = encoder_inputs.input_features
             result["encoder_attention_mask"] = encoder_inputs.attention_mask
 
         return result
 
     @property
-    def audio_marker(self) -> str:
-        return self._audio_marker
+    def audio_token(self) -> str:
+        return self._audio_token
 
     @property
-    def audio_marker_ids(self) -> Tuple[int, int]:
-        return AUDIO_START_TOKEN_ID, AUDIO_END_TOKEN_ID
+    def audio_token_id(self) -> int:
+        return self._audio_token_id

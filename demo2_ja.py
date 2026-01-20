@@ -27,8 +27,7 @@ from speech_llm_ja import (
     Adapter,
     LlamaForSpeechLM,
     LlamaForSpeechLMConfig,
-    AUDIO_START_TOKEN_ID,
-    AUDIO_END_TOKEN_ID,
+    AUDIO_TOKEN_ID,
     # Datasets
     ReazonSpeech,
     AutoMultiTurn,
@@ -59,8 +58,7 @@ __all__ = [
     "Adapter",
     "LlamaForSpeechLM",
     "LlamaForSpeechLMConfig",
-    "AUDIO_START_TOKEN_ID",
-    "AUDIO_END_TOKEN_ID",
+    "AUDIO_TOKEN_ID",
     # Datasets
     "ReazonSpeech",
     "AutoMultiTurn",

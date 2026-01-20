@@ -11,7 +11,7 @@ from accelerate import Accelerator, DataLoaderConfiguration
 
 from .model import LlamaForSpeechLM, LlamaForSpeechLMConfig
 from .datasets import ReazonSpeechSFT, FSD50KCaptioned, InterleavedDataset
-from .processor import SpeechLlamaProcessor
+from .processor import SpeechLlamaProcessor, SpeechLlamaProcessorConfig
 from .validate import validate
 
 
@@ -397,7 +397,11 @@ def train(
             )
 
     processor = SpeechLlamaProcessor.from_pretrained(
-        encoder_id=encoder_id, decoder_id=decoder_id
+        encoder_id=encoder_id,
+        decoder_id=decoder_id,
+        config=SpeechLlamaProcessorConfig(
+            adapter_kernel_size=model.config.adapter_kernel_size
+        ),
     )
 
     # Build dataset: ASR (ReazonSpeech) + AAC (FSD50K)

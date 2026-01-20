@@ -17,7 +17,7 @@ from .datasets import (
     LibriSpeechASR,
     InterleavedDataset,
 )
-from .processor import SpeechLlamaProcessor
+from .processor import SpeechLlamaProcessor, SpeechLlamaProcessorConfig
 from .train import OptimizerConfig, TrainingDataConfig, ValidationConfig, _train
 from .validate import validate_finetune
 
@@ -220,7 +220,11 @@ def finetune(
             )
 
     processor = SpeechLlamaProcessor.from_pretrained(
-        encoder_id=model.config.encoder_id, decoder_id=model.config.decoder_id
+        encoder_id=model.config.encoder_id,
+        decoder_id=model.config.decoder_id,
+        config=SpeechLlamaProcessorConfig(
+            adapter_kernel_size=model.config.adapter_kernel_size
+        ),
     )
 
     # Build dataset from enabled sources

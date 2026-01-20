@@ -23,7 +23,7 @@ def main() -> None:
         default="/groups/gch51701/Team031/model/pretrained/v4-8b-decay2m-ipt_v3.1-instruct4",
         help="LLM decoder model ID",
     )
-    parser.add_argument("--duration", type=float, default=0.5, help="Audio length (s)")
+    parser.add_argument("--duration", type=float, default=30.0, help="Audio length (s)")
     parser.add_argument("--sampling-rate", type=int, default=16000)
     args = parser.parse_args()
 
