@@ -119,16 +119,8 @@ class LlamaForSpeechLM(PreTrainedModel):
         """
         Embed input_ids and optionally insert audio embeddings between audio markers.
 
-        Expected prompt format:
-            あなたは音声を理解できるAIアシスタントです。
-
-            <|reserved_343|><|reserved_342|>### 指示:
-            {instruction}
-
-            ### 応答:
-            {response}<|eos|>
-
-        Audio embeddings are inserted between <|reserved_343|> and <|reserved_342|>.
+        Prompt construction is handled by SpeechLlamaProcessor. Audio embeddings are
+        inserted between <|reserved_343|> and <|reserved_342|> tokens.
         """
         inputs_embeds = self.decoder.get_input_embeddings()(input_ids)
 
@@ -252,6 +244,29 @@ class LlamaForSpeechLM(PreTrainedModel):
                     labels = F.pad(input_ids, (audio_len, 0), value=-100)
             else:
                 labels = input_ids
+        else:
+            # If labels are text-only, expand them to match inserted audio embeddings.
+            if input_features is not None and labels.shape[1] == input_ids.shape[1]:
+                audio_len = inputs_embeds.shape[1] - input_ids.shape[1]
+                if audio_len > 0:
+                    audio_start_positions = (input_ids == AUDIO_START_TOKEN_ID).nonzero(
+                        as_tuple=True
+                    )[1]
+                    if len(audio_start_positions) == input_ids.shape[0]:
+                        insert_pos = audio_start_positions[0].item() + 1
+                        labels_before = labels[:, :insert_pos]
+                        labels_after = labels[:, insert_pos:]
+                        audio_labels = torch.full(
+                            (input_ids.shape[0], audio_len),
+                            -100,
+                            dtype=labels.dtype,
+                            device=labels.device,
+                        )
+                        labels = torch.cat(
+                            (labels_before, audio_labels, labels_after), dim=1
+                        )
+                    else:
+                        labels = F.pad(labels, (audio_len, 0), value=-100)
 
         decoder_outputs = self.decoder(
             inputs_embeds=inputs_embeds, attention_mask=attention_mask, labels=labels

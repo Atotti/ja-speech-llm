@@ -7,12 +7,12 @@ import wandb
 from datasets import load_dataset, DownloadConfig
 
 from .datasets import ReazonSpeech, FSD50KCaptioned
+from .processor import SpeechLlamaProcessor
 
 
 def validate(
     model,
-    encoder_processor,
-    decoder_processor,
+    processor: SpeechLlamaProcessor,
     step: int,
     batch_size: int = 4,
     max_length: int = 1024,
@@ -27,37 +27,35 @@ def validate(
     model.eval()
 
     # ASR validation (ReazonSpeech test set)
-    # Audio is inserted between <|reserved_343|> and <|reserved_342|>
-    asr_prompt = """あなたは音声を理解できるAIアシスタントです。
-
-<|reserved_343|><|reserved_342|>### 指示:
-音声を書き起こしてください。
-
-### 応答:
-"""
-
     def asr_collate_fn(batch):
-        encoder_inputs = encoder_processor(
-            [item[0].squeeze(0).numpy() for item in batch],
-            return_tensors="pt",
-            return_attention_mask=True,
-            sampling_rate=16000,
-            device="cuda",
-        ).to("cuda")
+        messages_batch = []
+        audios = []
+        for item in batch:
+            messages_batch.append(
+                [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "audio"},
+                            {"type": "text", "text": "音声を書き起こしてください。"},
+                        ],
+                    }
+                ]
+            )
+            audios.append(item[0].squeeze(0))
 
-        decoder_inputs = decoder_processor(
-            [asr_prompt for _ in batch],
-            padding=True,
-            return_tensors="pt",
-        ).to("cuda")
+        model_inputs = processor(
+            messages_batch,
+            audios=audios,
+            add_generation_prompt=True,
+            return_labels=False,
+        )
+        model_inputs = {k: v.to("cuda") for k, v in model_inputs.items()}
 
         refs = [item[2] for item in batch]  # transcript
 
         return {
-            "input_features": encoder_inputs.input_features,
-            "input_ids": decoder_inputs.input_ids,
-            "encoder_attention_mask": encoder_inputs.attention_mask,
-            "decoder_attention_mask": decoder_inputs.attention_mask,
+            **model_inputs,
             "refs": refs,
         }
 
@@ -78,7 +76,7 @@ def validate(
             do_sample=do_sample,
             num_beams=num_beams,
         )
-        asr_hyps += decoder_processor.batch_decode(
+        asr_hyps += processor.tokenizer.batch_decode(
             generated_ids, skip_special_tokens=True
         )
         asr_refs += batch["refs"]
@@ -90,37 +88,35 @@ def validate(
     asr_refs = asr_refs[:100]
 
     # AAC validation (FSD50K)
-    # Audio is inserted between <|reserved_343|> and <|reserved_342|>
-    aac_prompt = """あなたは音声を理解できるAIアシスタントです。
-
-<|reserved_343|><|reserved_342|>### 指示:
-音声を説明してください。
-
-### 応答:
-"""
-
     def aac_collate_fn(batch):
-        encoder_inputs = encoder_processor(
-            [item["audio"].numpy() for item in batch],
-            return_tensors="pt",
-            return_attention_mask=True,
-            sampling_rate=16000,
-            device="cuda",
-        ).to("cuda")
+        messages_batch = []
+        audios = []
+        for item in batch:
+            messages_batch.append(
+                [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "audio"},
+                            {"type": "text", "text": "音声を説明してください。"},
+                        ],
+                    }
+                ]
+            )
+            audios.append(item["audio"])
 
-        decoder_inputs = decoder_processor(
-            [aac_prompt for _ in batch],
-            padding=True,
-            return_tensors="pt",
-        ).to("cuda")
+        model_inputs = processor(
+            messages_batch,
+            audios=audios,
+            add_generation_prompt=True,
+            return_labels=False,
+        )
+        model_inputs = {k: v.to("cuda") for k, v in model_inputs.items()}
 
         refs = [item["response"] for item in batch]  # caption
 
         return {
-            "input_features": encoder_inputs.input_features,
-            "input_ids": decoder_inputs.input_ids,
-            "encoder_attention_mask": encoder_inputs.attention_mask,
-            "decoder_attention_mask": decoder_inputs.attention_mask,
+            **model_inputs,
             "refs": refs,
         }
 
@@ -144,7 +140,7 @@ def validate(
             do_sample=do_sample,
             num_beams=num_beams,
         )
-        aac_hyps += decoder_processor.batch_decode(
+        aac_hyps += processor.tokenizer.batch_decode(
             generated_ids, skip_special_tokens=True
         )
         aac_refs += batch["refs"]
@@ -188,8 +184,7 @@ def validate(
 
 def validate_finetune(
     model,
-    encoder_processor,
-    decoder_processor,
+    processor: SpeechLlamaProcessor,
     step: int,
     batch_size: int = 4,
     max_length: int = 1024,
@@ -206,25 +201,6 @@ def validate_finetune(
     from .datasets import IF_INSTRUCTION
 
     model.eval()
-
-    # Prompt for generation (without response)
-    # Audio is inserted between <|reserved_343|> and <|reserved_342|>
-    gen_prompt = """あなたは音声を理解できるAIアシスタントです。
-
-<|reserved_343|><|reserved_342|>### 指示:
-{}
-
-### 応答:
-"""
-
-    # Prompt for loss computation (with response)
-    loss_prompt = """あなたは音声を理解できるAIアシスタントです。
-
-<|reserved_343|><|reserved_342|>### 指示:
-{}
-
-### 応答:
-{}<|eos|>"""
 
     # Load validation samples (use streaming to avoid caching issues)
     dl_config = DownloadConfig(resume_download=True, max_retries=20)
@@ -269,27 +245,31 @@ def validate_finetune(
 
     for i in range(0, len(samples), batch_size):
         batch = samples[i : i + batch_size]
+        messages_batch = []
+        audios = []
+        for item in batch:
+            messages_batch.append(
+                [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "audio"},
+                            {"type": "text", "text": IF_INSTRUCTION},
+                        ],
+                    },
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": item["response"]}],
+                    },
+                ]
+            )
+            audios.append(item["audio"])
 
-        encoder_inputs = encoder_processor(
-            [item["audio"].numpy() for item in batch],
-            return_tensors="pt",
-            return_attention_mask=True,
-            sampling_rate=16000,
-        ).to("cuda")
-
-        decoder_inputs = decoder_processor(
-            [loss_prompt.format(IF_INSTRUCTION, item["response"]) for item in batch],
-            padding=True,
-            return_tensors="pt",
-        ).to("cuda")
+        model_inputs = processor(messages_batch, audios=audios, return_labels=True)
+        model_inputs = {k: v.to("cuda") for k, v in model_inputs.items()}
 
         with torch.no_grad(), torch.amp.autocast("cuda", dtype=torch.bfloat16):
-            loss = model(
-                input_ids=decoder_inputs.input_ids,
-                decoder_attention_mask=decoder_inputs.attention_mask,
-                input_features=encoder_inputs.input_features,
-                encoder_attention_mask=encoder_inputs.attention_mask,
-            )
+            loss = model(**model_inputs)
         total_loss += loss.item()
         num_batches += 1
 
@@ -312,29 +292,34 @@ def validate_finetune(
     instructions = []
 
     for item in gen_samples:
-        encoder_inputs = encoder_processor(
-            [item["audio"].numpy()],
-            return_tensors="pt",
-            return_attention_mask=True,
-            sampling_rate=16000,
-        ).to("cuda")
-
-        decoder_inputs = decoder_processor(
-            [gen_prompt.format(IF_INSTRUCTION)],
-            return_tensors="pt",
-        ).to("cuda")
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "audio"},
+                    {"type": "text", "text": IF_INSTRUCTION},
+                ],
+            }
+        ]
+        model_inputs = processor(
+            messages,
+            audios=[item["audio"]],
+            add_generation_prompt=True,
+            return_labels=False,
+        )
+        model_inputs = {k: v.to("cuda") for k, v in model_inputs.items()}
 
         generated_ids = model.generate(
-            input_ids=decoder_inputs.input_ids,
-            decoder_attention_mask=decoder_inputs.attention_mask,
-            input_features=encoder_inputs.input_features,
-            encoder_attention_mask=encoder_inputs.attention_mask,
+            input_ids=model_inputs["input_ids"],
+            decoder_attention_mask=model_inputs["decoder_attention_mask"],
+            input_features=model_inputs["input_features"],
+            encoder_attention_mask=model_inputs["encoder_attention_mask"],
             max_length=max_length,
             do_sample=do_sample,
             num_beams=num_beams,
-            pad_token_id=decoder_processor.eos_token_id,
+            pad_token_id=processor.tokenizer.eos_token_id,
         )
-        hyp = decoder_processor.decode(generated_ids[0], skip_special_tokens=True)
+        hyp = processor.tokenizer.decode(generated_ids[0], skip_special_tokens=True)
         hyps.append(hyp)
         refs.append(item["response"])
         instructions.append(item["instruction"])

@@ -8,10 +8,10 @@ from typing import Dict, List
 import torch
 import wandb
 from accelerate import Accelerator, DataLoaderConfiguration
-from transformers import AutoProcessor, AutoTokenizer
 
 from .model import LlamaForSpeechLM, LlamaForSpeechLMConfig
 from .datasets import ReazonSpeechSFT, FSD50KCaptioned, InterleavedDataset
+from .processor import SpeechLlamaProcessor
 from .validate import validate
 
 
@@ -90,8 +90,7 @@ def _save_checkpoint(
 
 def _train(
     model: LlamaForSpeechLM,
-    encoder_processor,
-    decoder_processor,
+    processor: SpeechLlamaProcessor,
     loader: torch.utils.data.DataLoader,
     optimizer_config: OptimizerConfig,
     training_data_config: TrainingDataConfig,
@@ -243,8 +242,7 @@ def _train(
                         _validate_fn = validate_fn or validate
                         _validate_fn(
                             eval_model,
-                            encoder_processor,
-                            decoder_processor,
+                            processor,
                             step,
                             training_data_config.batch_size,
                             validation_config.max_length,
@@ -276,8 +274,7 @@ def _train(
             _validate_fn = validate_fn or validate
             _validate_fn(
                 eval_model,
-                encoder_processor,
-                decoder_processor,
+                processor,
                 step,
                 training_data_config.batch_size,
                 validation_config.max_length,
@@ -399,10 +396,8 @@ def train(
                 f"Decoder unfrozen: {trainable_params:,} / {total_params:,} params trainable"
             )
 
-    encoder_processor = AutoProcessor.from_pretrained(encoder_id)
-    decoder_processor = AutoTokenizer.from_pretrained(decoder_id)
-    decoder_processor.pad_token = (
-        decoder_processor.pad_token or decoder_processor.eos_token
+    processor = SpeechLlamaProcessor.from_pretrained(
+        encoder_id=encoder_id, decoder_id=decoder_id
     )
 
     # Build dataset: ASR (ReazonSpeech) + AAC (FSD50K)
@@ -433,16 +428,6 @@ def train(
     else:
         dataset = InterleavedDataset(datasets, weights)
 
-    # Prompt template for pretrain
-    # Audio is inserted between <|reserved_343|> and <|reserved_342|>
-    prompt = """あなたは音声を理解できるAIアシスタントです。
-
-<|reserved_343|><|reserved_342|>### 指示:
-{}
-
-### 応答:
-{}<|eos|>"""
-
     # collate: 照合する
     # ref: https://docs.pytorch.org/docs/stable/data.html#working-with-collate-fn
     def collate_fn(batch: List[Dict]) -> Dict[str, torch.Tensor]:
@@ -450,28 +435,26 @@ def train(
         Args:
             batch: List of dicts with keys: instruction, response, audio
         """
-        # Don't move to cuda here - Accelerate handles device placement
-        encoder_inputs = encoder_processor(
-            [item["audio"].numpy() for item in batch],
-            return_tensors="pt",
-            return_attention_mask=True,
-            sampling_rate=16000,
-        )
+        messages_batch = []
+        audios = []
+        for item in batch:
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "audio"},
+                        {"type": "text", "text": item["instruction"]},
+                    ],
+                },
+                {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": item["response"]}],
+                },
+            ]
+            messages_batch.append(messages)
+            audios.append(item["audio"])
 
-        decoder_inputs = decoder_processor(
-            [prompt.format(item["instruction"], item["response"]) for item in batch],
-            padding=True,
-            return_tensors="pt",
-        )
-
-        result = {
-            "input_features": encoder_inputs.input_features,
-            "input_ids": decoder_inputs.input_ids,
-            "encoder_attention_mask": encoder_inputs.attention_mask,
-            "decoder_attention_mask": decoder_inputs.attention_mask,
-        }
-
-        return result
+        return processor(messages_batch, audios=audios, return_labels=True)
 
     loader = torch.utils.data.DataLoader(dataset, batch_size, collate_fn=collate_fn)
 
@@ -499,8 +482,7 @@ def train(
 
     _train(
         model,
-        encoder_processor,
-        decoder_processor,
+        processor,
         loader,
         optimizer_config,
         training_data_config,

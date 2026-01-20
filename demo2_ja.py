@@ -46,6 +46,9 @@ from speech_llm_ja import (
     get_lr_schedule,
     _save_checkpoint,
     finetune,
+    # Processor
+    SpeechLlamaProcessor,
+    SpeechLlamaProcessorConfig,
     # Validation
     validate,
     validate_finetune,
@@ -69,6 +72,9 @@ __all__ = [
     "TextMultiturn",
     "InterleavedDataset",
     "IF_INSTRUCTION",
+    # Processor
+    "SpeechLlamaProcessor",
+    "SpeechLlamaProcessorConfig",
     # Training
     "train",
     "_train",

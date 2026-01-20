@@ -7,7 +7,6 @@ from typing import Any, Dict, List
 import torch
 import wandb
 from accelerate import Accelerator, DataLoaderConfiguration
-from transformers import AutoProcessor, AutoTokenizer
 
 from .model import LlamaForSpeechLM, LlamaForSpeechLMConfig
 from .datasets import (
@@ -18,6 +17,7 @@ from .datasets import (
     LibriSpeechASR,
     InterleavedDataset,
 )
+from .processor import SpeechLlamaProcessor
 from .train import OptimizerConfig, TrainingDataConfig, ValidationConfig, _train
 from .validate import validate_finetune
 
@@ -219,10 +219,8 @@ def finetune(
                 f"Decoder unfrozen: {trainable_params:,} / {total_params:,} params trainable"
             )
 
-    encoder_processor = AutoProcessor.from_pretrained(model.config.encoder_id)
-    decoder_processor = AutoTokenizer.from_pretrained(model.config.decoder_id)
-    decoder_processor.pad_token = (
-        decoder_processor.pad_token or decoder_processor.eos_token
+    processor = SpeechLlamaProcessor.from_pretrained(
+        encoder_id=model.config.encoder_id, decoder_id=model.config.decoder_id
     )
 
     # Build dataset from enabled sources
@@ -298,41 +296,29 @@ def finetune(
     else:
         dataset = InterleavedDataset(datasets, weights)
 
-    # Prompt template for finetune
-    # Audio is inserted between <|reserved_343|> and <|reserved_342|>
-    prompt = """あなたは音声を理解できるAIアシスタントです。
-
-<|reserved_343|><|reserved_342|>### 指示:
-{}
-
-### 応答:
-{}<|eos|>"""
-
     def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
         # All datasets yield: {"instruction": str, "response": str, "audio": torch.Tensor}
         # Audio is already filtered and resampled to 16kHz in each dataset's __iter__
-        # Don't move to cuda here - Accelerate handles device placement
-        encoder_inputs = encoder_processor(
-            [item["audio"].numpy() for item in batch],
-            return_tensors="pt",
-            return_attention_mask=True,
-            sampling_rate=16000,
-        )
+        messages_batch = []
+        audios = []
+        for item in batch:
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "audio"},
+                        {"type": "text", "text": item["instruction"]},
+                    ],
+                },
+                {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": item["response"]}],
+                },
+            ]
+            messages_batch.append(messages)
+            audios.append(item["audio"])
 
-        decoder_inputs = decoder_processor(
-            [prompt.format(item["instruction"], item["response"]) for item in batch],
-            padding=True,
-            return_tensors="pt",
-        )
-
-        result = {
-            "input_ids": decoder_inputs.input_ids,
-            "decoder_attention_mask": decoder_inputs.attention_mask,
-            "input_features": encoder_inputs.input_features,
-            "encoder_attention_mask": encoder_inputs.attention_mask,
-        }
-
-        return result
+        return processor(messages_batch, audios=audios, return_labels=True)
 
     # Note: IterableDataset doesn't support shuffle=True, data order depends on dataset
     loader = torch.utils.data.DataLoader(dataset, batch_size, collate_fn=collate_fn)
@@ -357,8 +343,7 @@ def finetune(
 
     _train(
         model,
-        encoder_processor,
-        decoder_processor,
+        processor,
         loader,
         optimizer_config,
         training_data_config,
