@@ -124,11 +124,16 @@ def _train(
         total_steps = training_data_config.max_steps
         target_step = training_data_config.start_step + training_data_config.max_steps
     else:
-        total_steps = (
-            len(loader)
-            // optimizer_config.grad_accumulation
-            * training_data_config.epoch
-        )
+        try:
+            total_steps = (
+                len(loader)
+                // optimizer_config.grad_accumulation
+                * training_data_config.epoch
+            )
+        except TypeError as exc:
+            raise ValueError(
+                "IterableDatasetの長さが不明なため、max_stepsを指定してください。"
+            ) from exc
         target_step = training_data_config.start_step + total_steps
 
     lr_scheduler = get_lr_schedule(
