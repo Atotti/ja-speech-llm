@@ -3,7 +3,7 @@
 #PBS -q rt_HF
 #PBS -N sft-full-8gpu
 #PBS -l select=1:ncpus=192:ngpus=8
-#PBS -l walltime=168:00:00
+#PBS -l walltime=5:00:00
 #PBS -o logs/
 #PBS -e logs/
 #PBS -m n
@@ -33,7 +33,7 @@ TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 
 echo "Mode: Full decoder - 8 GPU (v2)"
 
-ARGS="--unfreeze-decoder --max-steps 1000000000 --batch-size 1 --grad-accumulation 1 --warmup-steps 100 --val-check-interval-samples 100000 --lr 5e-5"
+ARGS="--unfreeze-decoder --max-steps 100000 --batch-size 1 --grad-accumulation 1 --warmup-steps 100 --val-check-interval-samples 100000 --lr 5e-5"
 MODEL_DIR="models/v2/LlamaForSpeechLM-ja-Instruct-Full-${TIMESTAMP}"
 
 if [ -n "$RESUME_FROM" ]; then
