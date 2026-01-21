@@ -13,10 +13,17 @@
 
 cd $PBS_O_WORKDIR
 
+# ログ用の設定
+export PYTHONUNBUFFERED=1
 JOBID=${PBS_JOBID%%.*}
 if [ -n "$JOBID" ]; then
   export WANDB_NAME="finetune-adapter-1gpu-${JOBID}"
 fi
+mkdir -p ./logs
+LOGFILE=./logs/finetune-adapter-1gpu-$JOBID.out
+ERRFILE=./logs/finetune-adapter-1gpu-$JOBID.err
+exec >$LOGFILE 2>$ERRFILE
+# ログ用の設定終わり
 
 source /etc/profile.d/modules.sh
 module load cuda/12.4
