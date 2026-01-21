@@ -9,6 +9,7 @@
 #PBS -m n
 
 # v2: Multi-GPU finetune with Accelerate (8x H200) - Full decoder
+# TODO(2026/01/27) ↓この表記は古いので治す
 # Format: システムプロンプト + <|reserved_343|>[audio]<|reserved_342|> + 指示 + 応答
 
 cd $PBS_O_WORKDIR
@@ -32,7 +33,7 @@ TIMESTAMP=$(date +%Y%m%d-%H%M%S)
 
 echo "Mode: Full decoder - 8 GPU (v2)"
 
-ARGS="--unfreeze-decoder --max-steps 1000000000 --batch-size 1 --grad-accumulation 16 --warmup-steps 100 --val-check-interval-samples 100000 --lr 5e-5"
+ARGS="--unfreeze-decoder --max-steps 1000000000 --batch-size 1 --grad-accumulation 1 --warmup-steps 100 --val-check-interval-samples 100000 --lr 5e-5"
 MODEL_DIR="models/v2/LlamaForSpeechLM-ja-Instruct-Full-${TIMESTAMP}"
 
 if [ -n "$RESUME_FROM" ]; then
