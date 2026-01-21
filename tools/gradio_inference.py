@@ -5,7 +5,7 @@ import argparse
 import sys
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Any, List, Tuple
+from typing import Any, List, Tuple, Union
 
 import gradio as gr
 import numpy as np
@@ -60,7 +60,6 @@ def _load_model(model_id: str, device: torch.device):
         model = model.to(dtype=torch.float32)
 
     processor_config = SpeechLlamaProcessorConfig(
-        decoder_id=decoder_id,
         adapter_kernel_size=model.config.adapter_kernel_size,
     )
     processor = SpeechLlamaProcessor.from_pretrained(
@@ -88,21 +87,32 @@ def _build_user_message(user_text: str, user_audio: Any) -> Tuple[Any, str]:
 
 
 def _generate_reply(
-    model,
-    processor,
+    model: LlamaForSpeechLM,
+    processor: SpeechLlamaProcessor,
     device: torch.device,
-    messages: List[dict],
+    messages: list[dict[str, Union[str, list[dict[str, str]]]]],
     max_new_tokens: int,
     do_sample: bool,
     temperature: float,
     top_p: float,
     num_beams: int,
 ) -> str:
+    print(f"[_generate_reply] messages={messages}")
+    # messages format (ProcessorMixin):
+    # [
+    #   {"role": "system|user|assistant",
+    #    "content": "text" or [{"type":"text","text":"..."},{"type":"audio","audio": np.ndarray}]},
+    # ]
     model_inputs = processor(
         messages,
         add_generation_prompt=True,
         return_labels=False,
     )
+    print(f"[_generate_reply] model_inputs keys={list(model_inputs.keys())}")
+    prompt_text = processor.tokenizer.decode(
+        model_inputs["input_ids"][0], skip_special_tokens=False
+    )
+    print(f"[_generate_reply] prompt_text tail={prompt_text[-400:]!r}")
     model_inputs = {k: v.to(device) for k, v in model_inputs.items()}
 
     gen_kwargs = {
@@ -133,8 +143,21 @@ def _generate_reply(
             )
 
     prompt_len = model_inputs["input_ids"].shape[1]
-    new_tokens = generated_ids[0, prompt_len:]
-    return processor.tokenizer.decode(new_tokens, skip_special_tokens=True)
+    if generated_ids.shape[1] < prompt_len:
+        new_tokens = generated_ids[0]
+    else:
+        new_tokens = generated_ids[0, prompt_len:]
+    print(
+        f"[_generate_reply] generated_ids shape={tuple(generated_ids.shape)} "
+        f"prompt_len={prompt_len} new_tokens_len={int(new_tokens.numel())}"
+    )
+    print(f"[_generate_reply] new_tokens ids={new_tokens.tolist()}")
+    reply = processor.tokenizer.decode(new_tokens, skip_special_tokens=True)
+    if not reply:
+        reply_raw = processor.tokenizer.decode(new_tokens, skip_special_tokens=False)
+        print(f"[_generate_reply] reply_raw={reply_raw!r}")
+    print(f"[_generate_reply] reply={reply!r}")
+    return reply
 
 
 def build_ui(model_id: str, device: torch.device):
@@ -186,17 +209,23 @@ def build_ui(model_id: str, device: torch.device):
             p,
             beams,
         ):
+            print(
+                f"[submit_message] text={text!r} audio={'yes' if audio is not None else 'no'}"
+            )
             audio_array = _normalize_audio(audio)
             content, display_user = _build_user_message(text, audio_array)
             if not content:
+                print("[submit_message] empty content -> no-op")
                 return chat_history, messages, chat_history, "", None
 
             processor.config.system_prompt = sys_prompt
             messages = list(messages)
             messages.append({"role": "user", "content": content})
+            print(f"[submit_message] messages size={len(messages)}")
 
             chat_history = list(chat_history)
-            chat_history.append((display_user, ""))
+            chat_history.append({"role": "user", "content": display_user})
+            print(f"[submit_message] chat_history size={len(chat_history)}")
 
             reply = _generate_reply(
                 model=model,
@@ -211,7 +240,10 @@ def build_ui(model_id: str, device: torch.device):
             )
 
             messages.append({"role": "assistant", "content": reply})
-            chat_history[-1] = (display_user, reply)
+            chat_history.append({"role": "assistant", "content": reply})
+            print(
+                f"[submit_message] reply len={len(reply)} chat_history size={len(chat_history)}"
+            )
             return chat_history, messages, chat_history, "", None
 
         send_inputs = [
