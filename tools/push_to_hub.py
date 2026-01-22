@@ -36,6 +36,10 @@ def _write_minimal_package(save_path: Path) -> None:
         '"""Minimal package for remote loading."""\n',
         encoding="utf-8",
     )
+    (save_path / "speech_llm_ja_processor.py").write_text(
+        "from speech_llm_ja.processor import SpeechLlamaProcessor\n",
+        encoding="utf-8",
+    )
     repo_root = Path(__file__).resolve().parents[1]
     shutil.copy2(repo_root / "src" / "speech_llm_ja" / "model.py", package_dir)
     shutil.copy2(repo_root / "src" / "speech_llm_ja" / "processor.py", package_dir)

@@ -85,7 +85,7 @@ class SpeechLlamaProcessor(ProcessorMixin):
         processor_config = {
             "processor_class": self.__class__.__name__,
             "auto_map": {
-                "AutoProcessor": "speech_llm_ja.processor.SpeechLlamaProcessor",
+                "AutoProcessor": "speech_llm_ja_processor.SpeechLlamaProcessor",
             },
         }
         processor_config_path = save_path / "processor_config.json"
