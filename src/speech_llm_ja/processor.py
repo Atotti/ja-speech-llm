@@ -63,7 +63,9 @@ class SpeechLlamaProcessor(ProcessorMixin):
         encoder_id: str,
         decoder_id: str,
         config: Optional[SpeechLlamaProcessorConfig] = None,
+        **kwargs,
     ) -> "SpeechLlamaProcessor":
+        kwargs.pop("trust_remote_code", None)
         encoder_processor = AutoProcessor.from_pretrained(encoder_id)
         tokenizer = AutoTokenizer.from_pretrained(decoder_id)
         return cls(
