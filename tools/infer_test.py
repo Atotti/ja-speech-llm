@@ -1,75 +1,85 @@
 #!/usr/bin/env python
-"""Quick inference test script"""
-import sys
-from pathlib import Path
+"""Quick inference test using a pushed Hub repo."""
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import argparse
+from typing import Any, Dict
 
 import torch
-from demo2_ja import LlamaForSpeechLM, ReazonSpeech, SpeechLlamaProcessor
-import evaluate
+from accelerate import Accelerator
+from transformers import AutoModelForCausalLM, AutoProcessor
+from transformers.audio_utils import load_audio
 
-# Load model
-print("Loading model...")
-model = LlamaForSpeechLM.from_pretrained(
-    "models/LlamaForSpeechLM-ja-20260110-221600"
-).cuda().eval()
-processor = SpeechLlamaProcessor.from_pretrained(
-    encoder_id=model.config.encoder_id,
-    decoder_id=model.config.decoder_id,
-)
 
-# Load test samples
-print("Loading test data...")
-dataset = ReazonSpeech(split='test', max_duration=15.0)
+def _move_to_device(batch: Dict[str, Any], device: torch.device, dtype: torch.dtype):
+    moved = {}
+    for key, value in batch.items():
+        if torch.is_tensor(value):
+            if value.dtype.is_floating_point:
+                moved[key] = value.to(device=device, dtype=dtype)
+            else:
+                moved[key] = value.to(device=device)
+        else:
+            moved[key] = value
+    return moved
 
-print("\n" + "="*50)
-hyps = []
-refs = []
 
-for i, sample in enumerate(dataset):
-    if i >= 10:  # 10サンプルテスト
-        break
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--repo-id", required=True)
+    parser.add_argument(
+        "--audio-url",
+        default="https://huggingface.co/datasets/eustlb/audio-samples/resolve/main/dude_where_is_my_car.wav",
+    )
+    parser.add_argument(
+        "--text",
+        default="What can you tell me about this audio?",
+    )
+    parser.add_argument("--max-new-tokens", type=int, default=256)
+    args = parser.parse_args()
 
-    waveform, sr, ref = sample[0], sample[1], sample[2]
+    device = Accelerator().device
+    dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
 
+    processor = AutoProcessor.from_pretrained(
+        args.repo_id, trust_remote_code=True
+    )
+    model = AutoModelForCausalLM.from_pretrained(
+        args.repo_id, torch_dtype=dtype, trust_remote_code=True
+    ).to(device)
+    model.eval()
+
+    audio = load_audio(args.audio_url, sampling_rate=16000)
     messages = [
         {
             "role": "user",
             "content": [
                 {"type": "audio"},
-                {"type": "text", "text": "音声を書き起こしてください。"},
+                {"type": "text", "text": args.text},
             ],
         }
     ]
     model_inputs = processor(
         messages,
-        audios=[waveform.squeeze(0)],
+        audios=[audio],
         add_generation_prompt=True,
         return_labels=False,
     )
-    model_inputs = {k: v.to("cuda") for k, v in model_inputs.items()}
+    model_inputs = _move_to_device(model_inputs, device, dtype)
 
-    with torch.inference_mode():
-        generated_ids = model.generate(
-            input_ids=model_inputs["input_ids"],
-            decoder_attention_mask=model_inputs["decoder_attention_mask"],
-            input_features=model_inputs["input_features"],
-            encoder_attention_mask=model_inputs["encoder_attention_mask"],
-            max_length=1024,
-            do_sample=False,
-            num_beams=1,  # greedy (validation と同じ)
+    with torch.no_grad():
+        outputs = model.generate(
+            **model_inputs, max_new_tokens=args.max_new_tokens
         )
 
-    hyp = processor.tokenizer.decode(generated_ids[0], skip_special_tokens=True)
-    hyps.append(hyp)
-    refs.append(ref)
+    prompt_len = int(model_inputs["decoder_attention_mask"][0].sum().item())
+    new_tokens = outputs[0, prompt_len:]
+    reply = processor.tokenizer.decode(new_tokens, skip_special_tokens=True)
 
-    print(f"[{i+1}] Reference:  {ref}")
-    print(f"    Prediction: {hyp}")
-    print("-"*50)
+    print("\nGenerated response:")
+    print("=" * 80)
+    print(reply)
+    print("=" * 80)
 
-# CER計算 (日本語に適切)
-cer_metric = evaluate.load("cer")
-cer = cer_metric.compute(predictions=hyps, references=refs) * 100
-print(f"\nCER: {cer:.2f}%")
+
+if __name__ == "__main__":
+    main()

@@ -82,6 +82,15 @@ class SpeechLlamaProcessor(ProcessorMixin):
         config_path = save_path / self.config_filename
         with config_path.open("w", encoding="utf-8") as f:
             json.dump(asdict(self.config), f, ensure_ascii=False, indent=2)
+        processor_config = {
+            "processor_class": self.__class__.__name__,
+            "auto_map": {
+                "AutoProcessor": "speech_llm_ja.processor.SpeechLlamaProcessor",
+            },
+        }
+        processor_config_path = save_path / "processor_config.json"
+        with processor_config_path.open("w", encoding="utf-8") as f:
+            json.dump(processor_config, f, ensure_ascii=True, indent=2)
 
     @classmethod
     def load_pretrained(cls, save_directory: str | Path) -> "SpeechLlamaProcessor":

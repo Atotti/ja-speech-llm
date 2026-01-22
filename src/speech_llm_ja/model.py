@@ -62,15 +62,18 @@ class LlamaForSpeechLMConfig(PretrainedConfig):
         self.text_config = text_config
 
         if text_config is not None:
-            self.vocab_size = getattr(text_config, "vocab_size", None)
-            self.hidden_size = getattr(text_config, "hidden_size", None)
-            self.num_hidden_layers = getattr(text_config, "num_hidden_layers", None)
-            self.num_attention_heads = getattr(text_config, "num_attention_heads", None)
-            self.pad_token_id = getattr(text_config, "pad_token_id", None)
-            self.bos_token_id = getattr(text_config, "bos_token_id", None)
-            self.eos_token_id = getattr(text_config, "eos_token_id", None)
+            self._sync_text_config(text_config)
 
         super().__init__(**kwargs)
+
+    def _sync_text_config(self, text_config) -> None:
+        self.vocab_size = getattr(text_config, "vocab_size", None)
+        self.hidden_size = getattr(text_config, "hidden_size", None)
+        self.num_hidden_layers = getattr(text_config, "num_hidden_layers", None)
+        self.num_attention_heads = getattr(text_config, "num_attention_heads", None)
+        self.pad_token_id = getattr(text_config, "pad_token_id", None)
+        self.bos_token_id = getattr(text_config, "bos_token_id", None)
+        self.eos_token_id = getattr(text_config, "eos_token_id", None)
 
 
 class Adapter(nn.Module):
@@ -119,9 +122,19 @@ class LlamaForSpeechLM(PreTrainedModel, GenerationMixin):
         self.encoder = WhisperForConditionalGeneration.from_pretrained(
             config.encoder_id
         ).model.encoder
-        self.decoder = AutoModelForCausalLM.from_pretrained(
-            config.decoder_id, torch_dtype=torch.bfloat16
-        )
+        if config.decoder_id:
+            self.decoder = AutoModelForCausalLM.from_pretrained(
+                config.decoder_id, torch_dtype=torch.bfloat16
+            )
+        elif config.text_config is not None:
+            self.decoder = AutoModelForCausalLM.from_config(config.text_config)
+        else:
+            raise ValueError("decoder_id or text_config must be provided.")
+        if config.audio_config is None:
+            config.audio_config = self.encoder.config
+        if config.text_config is None:
+            config.text_config = self.decoder.config
+            config._sync_text_config(config.text_config)
         self.adapter = Adapter(config)
 
         self.encoder.requires_grad_(False)
