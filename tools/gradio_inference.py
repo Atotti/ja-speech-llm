@@ -11,6 +11,7 @@ import gradio as gr
 import numpy as np
 import torch
 import torchaudio
+from transformers import AutoConfig
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -53,6 +54,14 @@ def _load_model(model_id: str, device: torch.device):
     decoder_id = "/home/harui/ml/experi/v4-8b-decay2m-ipt_v3.1-instruct4"
     config = LlamaForSpeechLMConfig.from_pretrained(model_id)
     config.decoder_id = decoder_id
+    config.text_config = AutoConfig.from_pretrained(decoder_id)
+    config.vocab_size = config.text_config.vocab_size
+    config.hidden_size = config.text_config.hidden_size
+    config.num_hidden_layers = config.text_config.num_hidden_layers
+    config.num_attention_heads = config.text_config.num_attention_heads
+    config.pad_token_id = config.text_config.pad_token_id
+    config.bos_token_id = config.text_config.bos_token_id
+    config.eos_token_id = config.text_config.eos_token_id
     model = LlamaForSpeechLM.from_pretrained(model_id, config=config)
     model.eval()
     model.to(device)
@@ -130,19 +139,16 @@ def _generate_reply(
             else nullcontext()
         )
         with autocast_ctx:
-            inputs_embeds, attention_mask = model.embed(
+            generated_ids = model.generate(
                 input_ids=model_inputs["input_ids"],
                 decoder_attention_mask=model_inputs["decoder_attention_mask"],
                 input_features=model_inputs.get("input_features"),
                 encoder_attention_mask=model_inputs.get("encoder_attention_mask"),
-            )
-            generated_ids = model.decoder.generate(
-                inputs_embeds=inputs_embeds,
-                attention_mask=attention_mask,
                 **gen_kwargs,
             )
 
-    prompt_len = model_inputs["input_ids"].shape[1]
+    attention_mask = model_inputs["decoder_attention_mask"]
+    prompt_len = int(attention_mask[0].sum().item())
     if generated_ids.shape[1] < prompt_len:
         new_tokens = generated_ids[0]
     else:

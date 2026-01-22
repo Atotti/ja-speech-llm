@@ -79,7 +79,7 @@ def _save_checkpoint(
     if use_lora:
         # Save adapter, LoRA, and config separately
         # LoRAをしている場合はAdapterはstate_dictで保存して、decoder,configはpretrained形式で保存
-        # なんで？ 
+        # なんで？
         torch.save(unwrapped_model.adapter.state_dict(), f"{checkpoint_dir}/adapter.pt")
         # transformersのPreTrainedModelクラスのsave_pretrainedを使って保存
         unwrapped_model.decoder.save_pretrained(f"{checkpoint_dir}/lora")
@@ -177,7 +177,8 @@ def _train(
         accum_loss = None
         for batch_idx, batch in enumerate(loader):
             with accelerator.autocast():
-                raw_loss = model(**batch)
+                outputs = model(**batch)
+                raw_loss = outputs.loss
                 # loss = 1 / grad_accum * \Sigma loss
                 # とすることでeffective batch size内の平均Lossになるようにする
                 loss = raw_loss / optimizer_config.grad_accumulation

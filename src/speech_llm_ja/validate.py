@@ -269,7 +269,8 @@ def validate_finetune(
         model_inputs = {k: v.to("cuda") for k, v in model_inputs.items()}
 
         with torch.no_grad(), torch.amp.autocast("cuda", dtype=torch.bfloat16):
-            loss = model(**model_inputs)
+            outputs = model(**model_inputs)
+            loss = outputs.loss
         total_loss += loss.item()
         num_batches += 1
 
