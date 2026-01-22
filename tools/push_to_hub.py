@@ -126,6 +126,7 @@ def main() -> None:
             "Pass --tokenizer-id with a tokenizer repo or local path."
         )
     processor = SpeechLlamaProcessor.from_pretrained(
+        tokenizer_id,
         encoder_id=model.config.encoder_id,
         decoder_id=tokenizer_id,
         config=SpeechLlamaProcessorConfig(
