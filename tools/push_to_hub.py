@@ -54,6 +54,31 @@ def _write_auto_map(save_path: Path) -> None:
         json.dumps(config, ensure_ascii=True, indent=2), encoding="utf-8"
     )
 
+def _sanitize_config_paths(save_path: Path) -> None:
+    config_path = save_path / "config.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+
+    config["decoder_id"] = None
+    encoder_id = config.get("encoder_id")
+    if encoder_id and Path(encoder_id).exists():
+        config["encoder_id"] = None
+
+    text_config = config.get("text_config") or {}
+    text_name = text_config.get("_name_or_path")
+    if text_name and Path(text_name).exists():
+        text_config["_name_or_path"] = None
+        config["text_config"] = text_config
+
+    audio_config = config.get("audio_config") or {}
+    audio_name = audio_config.get("_name_or_path")
+    if audio_name and Path(audio_name).exists():
+        audio_config["_name_or_path"] = None
+        config["audio_config"] = audio_config
+
+    config_path.write_text(
+        json.dumps(config, ensure_ascii=True, indent=2), encoding="utf-8"
+    )
+
 
 def main() -> None:
     parser = argparse.ArgumentParser()
@@ -105,6 +130,7 @@ def main() -> None:
         save_path = Path(tmpdir)
         model.save_pretrained(save_path, safe_serialization=True)
         processor.save_pretrained(save_path)
+        _sanitize_config_paths(save_path)
         _write_auto_map(save_path)
         _write_minimal_package(save_path)
 
