@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import torch
-from transformers import AutoProcessor, AutoTokenizer, ProcessorMixin
+from transformers import AutoConfig, AutoProcessor, AutoTokenizer, ProcessorMixin
 
 from .model import AUDIO_TOKEN_ID
 
@@ -67,16 +67,46 @@ class SpeechLlamaProcessor(ProcessorMixin):
         config: Optional[SpeechLlamaProcessorConfig] = None,
         **kwargs,
     ) -> "SpeechLlamaProcessor":
-        kwargs.pop("trust_remote_code", None)
+        trust_remote_code = kwargs.pop("trust_remote_code", None)
         if encoder_id is None and decoder_id is None:
-            encoder_processor = AutoProcessor.from_pretrained(
-                pretrained_model_name_or_path, subfolder="encoder", **kwargs
-            )
-            tokenizer = AutoTokenizer.from_pretrained(
-                pretrained_model_name_or_path, subfolder="decoder", **kwargs
-            )
-            encoder_id = f"{pretrained_model_name_or_path}/encoder"
-            decoder_id = f"{pretrained_model_name_or_path}/decoder"
+            try:
+                encoder_processor = AutoProcessor.from_pretrained(
+                    pretrained_model_name_or_path, subfolder="encoder", **kwargs
+                )
+                tokenizer = AutoTokenizer.from_pretrained(
+                    pretrained_model_name_or_path, subfolder="decoder", **kwargs
+                )
+                encoder_id = f"{pretrained_model_name_or_path}/encoder"
+                decoder_id = f"{pretrained_model_name_or_path}/decoder"
+            except Exception:
+                config_obj = AutoConfig.from_pretrained(
+                    pretrained_model_name_or_path,
+                    trust_remote_code=trust_remote_code,
+                )
+                encoder_id = getattr(config_obj, "encoder_id", None)
+                if encoder_id is None:
+                    audio_config = getattr(config_obj, "audio_config", None)
+                    encoder_id = getattr(audio_config, "_name_or_path", None)
+                if encoder_id is None:
+                    raise
+                encoder_processor = AutoProcessor.from_pretrained(
+                    encoder_id, **kwargs
+                )
+                try:
+                    tokenizer = AutoTokenizer.from_pretrained(
+                        pretrained_model_name_or_path, subfolder="decoder", **kwargs
+                    )
+                    decoder_id = f"{pretrained_model_name_or_path}/decoder"
+                except Exception:
+                    decoder_id = getattr(config_obj, "decoder_id", None)
+                    if decoder_id is None:
+                        text_config = getattr(config_obj, "text_config", None)
+                        decoder_id = getattr(text_config, "_name_or_path", None)
+                    if decoder_id is None:
+                        raise
+                    tokenizer = AutoTokenizer.from_pretrained(
+                        decoder_id, **kwargs
+                    )
         else:
             if encoder_id is None or decoder_id is None:
                 raise ValueError(
