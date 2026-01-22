@@ -27,7 +27,7 @@ class LlamaForSpeechLMConfig(PretrainedConfig):
     def __init__(
         self,
         encoder_id: str = "openai/whisper-large-v3",
-        decoder_id: str = "/groups/gch51701/Team031/model/pretrained/v4-8b-decay2m-ipt_v3.1-instruct4",
+        decoder_id: Optional[str] = None,
         audio_config=None,
         text_config=None,
         audio_token_id: int = AUDIO_TOKEN_ID,
