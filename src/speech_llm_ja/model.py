@@ -47,8 +47,6 @@ class LlamaForSpeechLMConfig(PretrainedConfig):
                 model_type,
                 **{k: v for k, v in audio_config.items() if k != "model_type"},
             )
-        elif audio_config is None and encoder_id is not None:
-            audio_config = AutoConfig.from_pretrained(encoder_id)
         self.audio_config = audio_config
 
         if isinstance(text_config, dict):
@@ -57,8 +55,6 @@ class LlamaForSpeechLMConfig(PretrainedConfig):
                 model_type,
                 **{k: v for k, v in text_config.items() if k != "model_type"},
             )
-        elif text_config is None and decoder_id is not None:
-            text_config = AutoConfig.from_pretrained(decoder_id)
         self.text_config = text_config
 
         if text_config is not None:
