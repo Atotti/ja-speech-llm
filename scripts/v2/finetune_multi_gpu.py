@@ -26,6 +26,7 @@ def main():
     parser.add_argument("--model-id", default=None, help="Pretrained checkpoint path (None to create fresh model)")
     parser.add_argument("--model-dir", default="models/v2/LlamaForSpeechLM-ja-Instruct")
     parser.add_argument("--encoder-id", default="openai/whisper-large-v3", help="Encoder model (for fresh model creation)")
+    parser.add_argument("--encoder-type", default="whisper", choices=["whisper", "afwhisper", "qwen2-audio"], help="Encoder type")
     parser.add_argument("--decoder-id", default="/groups/gch51701/Team031/model/pretrained/v4-8b-decay2m-ipt_v3.1-instruct4", help="Decoder model (for fresh model creation)")
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--lr", type=float, default=1e-4)
@@ -45,7 +46,7 @@ def main():
     # Dataset options
     parser.add_argument("--dataset-weights", type=int, nargs="+", default=None,
                         help="Weights for datasets: [magpie, multiturn, reazon, fsd50k_cc0, fsd50k_ccby, librispeech, text_multiturn]")
-    parser.add_argument("--use-text-multiturn", type=bool, default=True,
+    parser.add_argument("--use-text-multiturn", type=lambda x: x.lower() in ('true', '1', 'yes'), default=True,
                         help="Enable text-only multiturn dataset for capability preservation")
 
     args = parser.parse_args()
@@ -54,6 +55,7 @@ def main():
         model_id=args.model_id,
         model_dir=args.model_dir,
         encoder_id=args.encoder_id,
+        encoder_type=args.encoder_type,
         decoder_id=args.decoder_id,
         batch_size=args.batch_size,
         lr=args.lr,

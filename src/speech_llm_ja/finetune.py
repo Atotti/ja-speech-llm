@@ -5,6 +5,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import numpy as np
 import torch
 import wandb
 from accelerate import Accelerator, DataLoaderConfiguration
@@ -21,6 +22,12 @@ from .datasets import (
     InterleavedDataset,
 )
 from .train import _train
+from .utils import (
+    get_encoder_processor,
+    pad_or_trim_audio,
+    AFWHISPER_SAMPLE_RATE,
+    AFWHISPER_MAX_SAMPLES,
+)
 from .validate import validate_finetune
 
 
@@ -30,6 +37,7 @@ def finetune(
     # For fresh model creation (used when model_id is None)
     encoder_id: str = "openai/whisper-large-v3",
     decoder_id: str = "/groups/gch51701/Team031/model/pretrained/v4-8b-decay2m-ipt_v3.1-instruct4",
+    encoder_type: str = "whisper",  # "whisper", "afwhisper", or "qwen2-audio"
     batch_size: int = 4,
     lr: float = 1e-4,
     epoch: int = 5,
@@ -223,8 +231,8 @@ def finetune(
     else:
         # Create fresh model from encoder_id and decoder_id (skip pretrain)
         if is_main_process:
-            print(f"Creating fresh model: encoder={encoder_id}, decoder={decoder_id}")
-        config = LlamaForSpeechLMConfig(encoder_id=encoder_id, decoder_id=decoder_id)
+            print(f"Creating fresh model: encoder={encoder_id} ({encoder_type}), decoder={decoder_id}")
+        config = LlamaForSpeechLMConfig(encoder_id=encoder_id, decoder_id=decoder_id, encoder_type=encoder_type)
         model = LlamaForSpeechLM(config)
         if not use_accelerate:
             model = model.cuda()
@@ -255,9 +263,14 @@ def finetune(
         if is_main_process:
             print(f"Decoder unfrozen: {trainable_params:,} / {total_params:,} params trainable")
 
-    encoder_processor = AutoProcessor.from_pretrained(model.config.encoder_id)
+    # Get encoder_type from model config
+    model_encoder_type = getattr(model.config, 'encoder_type', 'whisper')
+    encoder_processor = get_encoder_processor(model.config.encoder_id, model_encoder_type)
     decoder_processor = AutoTokenizer.from_pretrained(model.config.decoder_id)
     decoder_processor.pad_token = decoder_processor.pad_token or decoder_processor.eos_token
+
+    if is_main_process:
+        print(f"Encoder type: {model_encoder_type}, ID: {model.config.encoder_id}")
 
     # Build dataset from enabled sources
     datasets = []
@@ -315,7 +328,7 @@ def finetune(
         dataset = InterleavedDataset(datasets, weights)
 
     # Prompt templates for finetune
-    # Audio samples: audio is inserted between <|reserved_343|> and <|reserved_342|>
+    # Single-turn audio: audio is inserted between <|reserved_343|> and <|reserved_342|>
     prompt_audio = """あなたは音声を理解できるAIアシスタントです。
 
 <|reserved_343|><|reserved_342|>### 指示:
@@ -333,95 +346,224 @@ def finetune(
 ### 応答:
 {}<|eos|>"""
 
-    def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, torch.Tensor]:
-        # Datasets yield: {"instruction": str, "response": str, "audio": torch.Tensor or None}
-        # Audio is already filtered and resampled to 16kHz in each dataset's __iter__
-        # Don't move to cuda here - Accelerate handles device placement
-        import numpy as np
+    # System prompt for multi-turn
+    system_prompt = "あなたは音声を理解できるAIアシスタントです。\n\n"
 
-        # Separate audio and text-only samples
-        audio_samples = [item for item in batch if item["audio"] is not None]
-        text_samples = [item for item in batch if item["audio"] is None]
+    def build_multiturn_prompt(turns: List[Dict]) -> str:
+        """Build prompt for multi-turn conversation."""
+        prompt = system_prompt
+        for i, turn in enumerate(turns):
+            if turn.get("audio") is not None:
+                prompt += "<|reserved_343|><|reserved_342|>"
+            prompt += f"### 指示:\n{turn['instruction']}\n\n"
+            prompt += f"### 応答:\n{turn['response']}"
+            if i < len(turns) - 1:
+                prompt += "\n\n"
+            else:
+                prompt += "<|eos|>"
+        return prompt
 
-        # Process audio samples
-        if audio_samples:
-            audio_encoder_inputs = encoder_processor(
-                [item["audio"].numpy() for item in audio_samples],
+    def process_audio_for_encoder(audio: torch.Tensor) -> torch.Tensor:
+        """Process a single audio tensor for the encoder."""
+        if model_encoder_type in ("afwhisper", "qwen2-audio"):
+            audio_np = pad_or_trim_audio(audio.numpy(), AFWHISPER_MAX_SAMPLES)
+            features = encoder_processor(
+                audio_np,
                 return_tensors="pt",
-                return_attention_mask=True,
+                sampling_rate=AFWHISPER_SAMPLE_RATE,
+            )
+        else:
+            features = encoder_processor(
+                audio.numpy(),
+                return_tensors="pt",
                 sampling_rate=16000,
             )
-            audio_decoder_inputs = decoder_processor(
-                [prompt_audio.format(item["instruction"], item["response"]) for item in audio_samples],
+        return features.input_features.squeeze(0)  # [feature_size, feature_length]
+
+    def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Collate function supporting both single-turn and multi-turn samples.
+
+        Single-turn format: {"instruction": str, "response": str, "audio": Tensor or None}
+        Multi-turn format: {"turns": [{"instruction": str, "response": str, "audio": Tensor or None}, ...]}
+        """
+        # Check if any sample is multi-turn
+        has_multiturn = any("turns" in item for item in batch)
+
+        if has_multiturn:
+            # Multi-turn mode: convert all samples to multi-turn format
+            all_prompts = []
+            all_audios = []  # List[List[Tensor]]
+
+            for item in batch:
+                if "turns" in item:
+                    # Already multi-turn
+                    turns = item["turns"]
+                else:
+                    # Convert single-turn to multi-turn format
+                    turns = [{
+                        "audio": item.get("audio"),
+                        "instruction": item["instruction"],
+                        "response": item["response"],
+                    }]
+
+                # Build prompt
+                prompt = build_multiturn_prompt(turns)
+                all_prompts.append(prompt)
+
+                # Collect audios for this sample
+                sample_audios = []
+                for turn in turns:
+                    if turn.get("audio") is not None:
+                        audio_features = process_audio_for_encoder(turn["audio"])
+                        sample_audios.append(audio_features)
+                all_audios.append(sample_audios)
+
+            # Tokenize prompts
+            decoder_inputs = decoder_processor(
+                all_prompts,
                 padding=True,
                 return_tensors="pt",
             )
 
-        # Process text-only samples (use dummy silent audio for encoder)
-        if text_samples:
-            # Create dummy silent audio (0.1 sec at 16kHz)
-            dummy_audio = np.zeros(1600, dtype=np.float32)
-            text_encoder_inputs = encoder_processor(
-                [dummy_audio for _ in text_samples],
-                return_tensors="pt",
-                return_attention_mask=True,
-                sampling_rate=16000,
-            )
-            text_decoder_inputs = decoder_processor(
-                [prompt_text.format(item["instruction"], item["response"]) for item in text_samples],
-                padding=True,
-                return_tensors="pt",
-            )
-
-        # Combine results (audio first, then text)
-        if audio_samples and text_samples:
-            # Need to pad to same length before concatenating
-            max_input_len = max(audio_decoder_inputs.input_ids.shape[1], text_decoder_inputs.input_ids.shape[1])
-
-            # Pad audio decoder inputs
-            audio_pad_len = max_input_len - audio_decoder_inputs.input_ids.shape[1]
-            if audio_pad_len > 0:
-                audio_decoder_inputs.input_ids = torch.nn.functional.pad(
-                    audio_decoder_inputs.input_ids, (0, audio_pad_len), value=decoder_processor.pad_token_id
-                )
-                audio_decoder_inputs.attention_mask = torch.nn.functional.pad(
-                    audio_decoder_inputs.attention_mask, (0, audio_pad_len), value=0
-                )
-
-            # Pad text decoder inputs
-            text_pad_len = max_input_len - text_decoder_inputs.input_ids.shape[1]
-            if text_pad_len > 0:
-                text_decoder_inputs.input_ids = torch.nn.functional.pad(
-                    text_decoder_inputs.input_ids, (0, text_pad_len), value=decoder_processor.pad_token_id
-                )
-                text_decoder_inputs.attention_mask = torch.nn.functional.pad(
-                    text_decoder_inputs.attention_mask, (0, text_pad_len), value=0
-                )
-
             result = {
-                "input_ids": torch.cat([audio_decoder_inputs.input_ids, text_decoder_inputs.input_ids], dim=0),
-                "decoder_attention_mask": torch.cat([audio_decoder_inputs.attention_mask, text_decoder_inputs.attention_mask], dim=0),
-                "input_features": torch.cat([audio_encoder_inputs.input_features, text_encoder_inputs.input_features], dim=0),
-                "encoder_attention_mask": torch.cat([audio_encoder_inputs.attention_mask, text_encoder_inputs.attention_mask], dim=0),
+                "input_ids": decoder_inputs.input_ids,
+                "decoder_attention_mask": decoder_inputs.attention_mask,
+                "audios": all_audios,  # List[List[Tensor]]
             }
-        elif audio_samples:
-            result = {
-                "input_ids": audio_decoder_inputs.input_ids,
-                "decoder_attention_mask": audio_decoder_inputs.attention_mask,
-                "input_features": audio_encoder_inputs.input_features,
-                "encoder_attention_mask": audio_encoder_inputs.attention_mask,
-            }
-        else:  # text_samples only
-            result = {
-                "input_ids": text_decoder_inputs.input_ids,
-                "decoder_attention_mask": text_decoder_inputs.attention_mask,
-                "input_features": text_encoder_inputs.input_features,
-                "encoder_attention_mask": text_encoder_inputs.attention_mask,
-            }
+
+        else:
+            # Legacy single-turn mode (no multi-turn samples in batch)
+            # Separate audio and text-only samples
+            audio_samples = [item for item in batch if item.get("audio") is not None]
+            text_samples = [item for item in batch if item.get("audio") is None]
+
+            # Process audio samples
+            if audio_samples:
+                if model_encoder_type in ("afwhisper", "qwen2-audio"):
+                    # Qwen2AudioEncoder-based: pad/trim to fixed 30s length
+                    audios = []
+                    original_lengths = []
+                    for item in audio_samples:
+                        audio = item["audio"].numpy()
+                        original_lengths.append(len(audio))
+                        audio = pad_or_trim_audio(audio, AFWHISPER_MAX_SAMPLES)
+                        audios.append(audio)
+
+                    audio_encoder_inputs = encoder_processor(
+                        audios,
+                        return_tensors="pt",
+                        return_attention_mask=True,
+                        sampling_rate=AFWHISPER_SAMPLE_RATE,
+                    )
+
+                    # Create attention mask based on original audio lengths
+                    mel_length = audio_encoder_inputs.input_features.shape[-1]
+                    original_mel_lengths = [min(int(l / 160), mel_length) for l in original_lengths]
+                    audio_encoder_attention_mask = torch.zeros(len(audio_samples), mel_length, dtype=torch.long)
+                    for i, mel_len in enumerate(original_mel_lengths):
+                        audio_encoder_attention_mask[i, :mel_len] = 1
+                else:
+                    # Whisper: variable length processing
+                    audio_encoder_inputs = encoder_processor(
+                        [item["audio"].numpy() for item in audio_samples],
+                        return_tensors="pt",
+                        return_attention_mask=True,
+                        sampling_rate=16000,
+                    )
+                    audio_encoder_attention_mask = audio_encoder_inputs.attention_mask
+
+                audio_decoder_inputs = decoder_processor(
+                    [prompt_audio.format(item["instruction"], item["response"]) for item in audio_samples],
+                    padding=True,
+                    return_tensors="pt",
+                )
+
+            # Process text-only samples (use dummy silent audio for encoder)
+            if text_samples:
+                if model_encoder_type in ("afwhisper", "qwen2-audio"):
+                    # Qwen2AudioEncoder-based: use 30s dummy audio
+                    dummy_audio = np.zeros(AFWHISPER_MAX_SAMPLES, dtype=np.float32)
+                    text_encoder_inputs = encoder_processor(
+                        [dummy_audio for _ in text_samples],
+                        return_tensors="pt",
+                        return_attention_mask=True,
+                        sampling_rate=AFWHISPER_SAMPLE_RATE,
+                    )
+                    # Set attention mask to zeros (no valid audio)
+                    mel_length = text_encoder_inputs.input_features.shape[-1]
+                    text_encoder_attention_mask = torch.zeros(len(text_samples), mel_length, dtype=torch.long)
+                else:
+                    # Whisper: use short dummy audio
+                    dummy_audio = np.zeros(1600, dtype=np.float32)
+                    text_encoder_inputs = encoder_processor(
+                        [dummy_audio for _ in text_samples],
+                        return_tensors="pt",
+                        return_attention_mask=True,
+                        sampling_rate=16000,
+                    )
+                    text_encoder_attention_mask = text_encoder_inputs.attention_mask
+
+                text_decoder_inputs = decoder_processor(
+                    [prompt_text.format(item["instruction"], item["response"]) for item in text_samples],
+                    padding=True,
+                    return_tensors="pt",
+                )
+
+            # Combine results (audio first, then text)
+            if audio_samples and text_samples:
+                # Need to pad to same length before concatenating
+                max_input_len = max(audio_decoder_inputs.input_ids.shape[1], text_decoder_inputs.input_ids.shape[1])
+
+                # Pad audio decoder inputs
+                audio_pad_len = max_input_len - audio_decoder_inputs.input_ids.shape[1]
+                if audio_pad_len > 0:
+                    audio_decoder_inputs.input_ids = torch.nn.functional.pad(
+                        audio_decoder_inputs.input_ids, (0, audio_pad_len), value=decoder_processor.pad_token_id
+                    )
+                    audio_decoder_inputs.attention_mask = torch.nn.functional.pad(
+                        audio_decoder_inputs.attention_mask, (0, audio_pad_len), value=0
+                    )
+
+                # Pad text decoder inputs
+                text_pad_len = max_input_len - text_decoder_inputs.input_ids.shape[1]
+                if text_pad_len > 0:
+                    text_decoder_inputs.input_ids = torch.nn.functional.pad(
+                        text_decoder_inputs.input_ids, (0, text_pad_len), value=decoder_processor.pad_token_id
+                    )
+                    text_decoder_inputs.attention_mask = torch.nn.functional.pad(
+                        text_decoder_inputs.attention_mask, (0, text_pad_len), value=0
+                    )
+
+                result = {
+                    "input_ids": torch.cat([audio_decoder_inputs.input_ids, text_decoder_inputs.input_ids], dim=0),
+                    "decoder_attention_mask": torch.cat([audio_decoder_inputs.attention_mask, text_decoder_inputs.attention_mask], dim=0),
+                    "input_features": torch.cat([audio_encoder_inputs.input_features, text_encoder_inputs.input_features], dim=0),
+                    "encoder_attention_mask": torch.cat([audio_encoder_attention_mask, text_encoder_attention_mask], dim=0),
+                }
+            elif audio_samples:
+                result = {
+                    "input_ids": audio_decoder_inputs.input_ids,
+                    "decoder_attention_mask": audio_decoder_inputs.attention_mask,
+                    "input_features": audio_encoder_inputs.input_features,
+                    "encoder_attention_mask": audio_encoder_attention_mask,
+                }
+            else:  # text_samples only
+                result = {
+                    "input_ids": text_decoder_inputs.input_ids,
+                    "decoder_attention_mask": text_decoder_inputs.attention_mask,
+                    "input_features": text_encoder_inputs.input_features,
+                    "encoder_attention_mask": text_encoder_attention_mask,
+                }
 
         # Move to cuda only for single-GPU (non-Accelerate) mode
         if not use_accelerate:
-            result = {k: v.cuda() for k, v in result.items()}
+            if "audios" in result:
+                # Multi-turn: move audios to cuda
+                result["input_ids"] = result["input_ids"].cuda()
+                result["decoder_attention_mask"] = result["decoder_attention_mask"].cuda()
+                result["audios"] = [[a.cuda() for a in sample_audios] for sample_audios in result["audios"]]
+            else:
+                result = {k: v.cuda() for k, v in result.items()}
 
         return result
 

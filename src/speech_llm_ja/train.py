@@ -4,15 +4,22 @@ import re
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import numpy as np
 import torch
 import wandb
 from accelerate import Accelerator, DataLoaderConfiguration
 from tqdm import tqdm
-from transformers import AutoProcessor, AutoTokenizer
+from transformers import AutoProcessor, AutoTokenizer, AutoFeatureExtractor
 
 from .model import LlamaForSpeechLM, LlamaForSpeechLMConfig
 from .datasets import ReazonSpeech, ReazonSpeechSFT, FSD50KCaptioned, InterleavedDataset
-from .validate import validate
+from .utils import (
+    get_encoder_processor,
+    pad_or_trim_audio,
+    AFWHISPER_SAMPLE_RATE,
+    AFWHISPER_MAX_DURATION,
+    AFWHISPER_MAX_SAMPLES,
+)
 
 
 def get_lr_schedule(
@@ -166,7 +173,11 @@ def _train(
                     if is_main_process:
                         # Get unwrapped model for validation
                         eval_model = accelerator.unwrap_model(model) if is_distributed else model
-                        _validate_fn = validate_fn or validate
+                        if validate_fn is None:
+                            from .validate import validate as default_validate
+                            _validate_fn = default_validate
+                        else:
+                            _validate_fn = validate_fn
                         _validate_fn(
                             eval_model,
                             encoder_processor,
@@ -198,7 +209,11 @@ def _train(
         # validation at epoch end (if val_check_interval is not set)
         if val_check_interval is None and is_main_process:
             eval_model = accelerator.unwrap_model(model) if is_distributed else model
-            _validate_fn = validate_fn or validate
+            if validate_fn is None:
+                from .validate import validate as default_validate
+                _validate_fn = default_validate
+            else:
+                _validate_fn = validate_fn
             _validate_fn(
                 eval_model,
                 encoder_processor,
@@ -226,6 +241,7 @@ def _train(
 def train(
     encoder_id="openai/whisper-large-v3",
     decoder_id="/groups/gch51701/Team031/model/pretrained/v4-8b-decay2m-ipt_v3.1-instruct4",
+    encoder_type: str = "whisper",  # "whisper", "afwhisper", or "qwen2-audio"
     batch_size: int = 4,
     lr: float = 1e-3,
     epoch: int = 5,
@@ -255,6 +271,7 @@ def train(
     Train adapter on ASR (ReazonSpeech) + AAC (FSD50K).
 
     Args:
+        encoder_type: Audio encoder type ("whisper", "afwhisper", or "qwen2-audio").
         resume_from: Path to checkpoint to resume from (e.g., "models/LlamaForSpeechLM-ja-step20000")
         start_step: Step number to resume from. max_steps is added to this.
         unfreeze_decoder: If True, unfreeze decoder for full training (~8B params).
@@ -280,6 +297,7 @@ def train(
             config={
                 "encoder_id": encoder_id,
                 "decoder_id": decoder_id,
+                "encoder_type": encoder_type,
                 "batch_size": batch_size,
                 "lr": lr,
                 "epoch": epoch,
@@ -306,9 +324,10 @@ def train(
             model = LlamaForSpeechLM.from_pretrained(resume_from)
         else:
             model = LlamaForSpeechLM.from_pretrained(resume_from).cuda()
-        # Use encoder/decoder IDs from checkpoint
+        # Use encoder/decoder IDs and encoder_type from checkpoint
         encoder_id = model.config.encoder_id
         decoder_id = model.config.decoder_id
+        encoder_type = model.config.encoder_type
         # Auto-extract start_step from checkpoint path (e.g., "...-step20000" -> 20000)
         match = re.search(r"step(\d+)", resume_from)
         if match and start_step == 0:
@@ -317,10 +336,13 @@ def train(
                 print(f"Auto-detected start_step: {start_step}")
     else:
         # Create new model
+        config = LlamaForSpeechLMConfig(
+            encoder_id=encoder_id, decoder_id=decoder_id, encoder_type=encoder_type
+        )
         if use_accelerate:
-            model = LlamaForSpeechLM(LlamaForSpeechLMConfig(encoder_id=encoder_id, decoder_id=decoder_id))
+            model = LlamaForSpeechLM(config)
         else:
-            model = LlamaForSpeechLM(LlamaForSpeechLMConfig(encoder_id=encoder_id, decoder_id=decoder_id)).cuda()
+            model = LlamaForSpeechLM(config).cuda()
 
     # Unfreeze decoder for full training
     if unfreeze_decoder:
@@ -330,9 +352,12 @@ def train(
         if is_main_process:
             print(f"Decoder unfrozen: {trainable_params:,} / {total_params:,} params trainable")
 
-    encoder_processor = AutoProcessor.from_pretrained(encoder_id)
+    encoder_processor = get_encoder_processor(encoder_id, encoder_type)
     decoder_processor = AutoTokenizer.from_pretrained(decoder_id)
     decoder_processor.pad_token = decoder_processor.pad_token or decoder_processor.eos_token
+
+    if is_main_process:
+        print(f"Encoder type: {encoder_type}, ID: {encoder_id}")
 
     # Build dataset: ASR (ReazonSpeech) + AAC (FSD50K)
     datasets = []
@@ -376,12 +401,40 @@ def train(
             batch: List of dicts with keys: instruction, response, audio
         """
         # Don't move to cuda here - Accelerate handles device placement
-        encoder_inputs = encoder_processor(
-            [item["audio"].numpy() for item in batch],
-            return_tensors="pt",
-            return_attention_mask=True,
-            sampling_rate=16000,
-        )
+        if encoder_type in ("afwhisper", "qwen2-audio"):
+            # AFWhisper: pad/trim to fixed 30s length
+            audios = []
+            original_lengths = []
+            for item in batch:
+                audio = item["audio"].numpy()
+                original_lengths.append(len(audio))
+                audio = pad_or_trim_audio(audio, AFWHISPER_MAX_SAMPLES)
+                audios.append(audio)
+
+            encoder_inputs = encoder_processor(
+                audios,
+                return_tensors="pt",
+                return_attention_mask=True,
+                sampling_rate=AFWHISPER_SAMPLE_RATE,
+            )
+
+            # Create attention mask based on original audio lengths
+            # The feature extractor output length depends on the model's downsampling
+            # For Qwen2-Audio: input samples -> mel frames (hop_length=160) -> encoder output
+            mel_length = encoder_inputs.input_features.shape[-1]  # time dimension
+            original_mel_lengths = [min(int(l / 160), mel_length) for l in original_lengths]
+            encoder_attention_mask = torch.zeros(len(batch), mel_length, dtype=torch.long)
+            for i, mel_len in enumerate(original_mel_lengths):
+                encoder_attention_mask[i, :mel_len] = 1
+        else:
+            # Whisper: variable length processing
+            encoder_inputs = encoder_processor(
+                [item["audio"].numpy() for item in batch],
+                return_tensors="pt",
+                return_attention_mask=True,
+                sampling_rate=16000,
+            )
+            encoder_attention_mask = encoder_inputs.attention_mask
 
         decoder_inputs = decoder_processor(
             [prompt.format(item["instruction"], item["response"]) for item in batch],
@@ -392,7 +445,7 @@ def train(
         result = {
             "input_features": encoder_inputs.input_features,
             "input_ids": decoder_inputs.input_ids,
-            "encoder_attention_mask": encoder_inputs.attention_mask,
+            "encoder_attention_mask": encoder_attention_mask,
             "decoder_attention_mask": decoder_inputs.attention_mask,
         }
 

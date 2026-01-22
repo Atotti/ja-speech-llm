@@ -177,7 +177,11 @@ class SpokenMagpie(torch.utils.data.IterableDataset):
 
 
 class SpokenMultiturnSFT(torch.utils.data.IterableDataset):
-    """Spoken multi-turn SFT dataset (Atotti/spoken-multiturn-sft)."""
+    """Spoken multi-turn SFT dataset (Atotti/spoken-multiturn-sft).
+
+    Yields multi-turn conversations as a single sample with all turns included.
+    Format: {"turns": [{"audio": Tensor, "instruction": str, "response": str}, ...]}
+    """
 
     def __init__(
         self,
@@ -185,50 +189,85 @@ class SpokenMultiturnSFT(torch.utils.data.IterableDataset):
         split: str = "train",
         max_duration: float = 30.0,
         max_response_length: int = 2048,
+        multi_turn: bool = True,  # True: yield multi-turn, False: yield single turns (legacy)
     ):
         dl_config = DownloadConfig(resume_download=True, max_retries=10)
         self.dataset = load_dataset(dataset_id, split=split, streaming=True, download_config=dl_config)
         self.max_duration = max_duration
         self.max_response_length = max_response_length
+        self.multi_turn = multi_turn
 
-    def __iter__(self):
+    def _process_audio(self, audio_data):
+        """Process audio data and return tensor, or None if invalid."""
         import numpy as np
 
+        if audio_data is None:
+            return None
+
+        wav = audio_data.get("array")
+        sr = audio_data.get("sampling_rate")
+        if wav is None or sr is None:
+            return None
+
+        if isinstance(wav, list):
+            wav = np.array(wav, dtype=np.float32)
+        if len(wav) / sr > self.max_duration:
+            return None
+        audio = torch.from_numpy(wav).float()
+        if sr != 16000:
+            audio = torchaudio.functional.resample(audio, sr, 16000)
+        return audio
+
+    def __iter__(self):
         for item in self.dataset:
             try:
-                # Yield turn 1: q1_audio -> a1
-                if len(item["a1"]) <= self.max_response_length:
-                    audio_data = item["q1_audio"]
-                    wav = audio_data["array"]
-                    sr = audio_data["sampling_rate"]
-                    if isinstance(wav, list):
-                        wav = np.array(wav, dtype=np.float32)
-                    if len(wav) / sr <= self.max_duration:
-                        audio = torch.from_numpy(wav).float()
-                        if sr != 16000:
-                            audio = torchaudio.functional.resample(audio, sr, 16000)
-                        yield {
-                            "instruction": IF_INSTRUCTION,  # Audio IS the instruction
-                            "response": item["a1"],
-                            "audio": audio,
-                        }
+                if self.multi_turn:
+                    # Multi-turn mode: yield both turns as a single sample
+                    turns = []
 
-                # Yield turn 2: q2_audio -> a2 (with context from turn 1)
-                if len(item["a2"]) <= self.max_response_length:
-                    audio_data = item["q2_audio"]
-                    wav = audio_data["array"]
-                    sr = audio_data["sampling_rate"]
-                    if isinstance(wav, list):
-                        wav = np.array(wav, dtype=np.float32)
-                    if len(wav) / sr <= self.max_duration:
-                        audio = torch.from_numpy(wav).float()
-                        if sr != 16000:
-                            audio = torchaudio.functional.resample(audio, sr, 16000)
-                        yield {
-                            "instruction": IF_INSTRUCTION,  # Audio IS the instruction
-                            "response": item["a2"],
-                            "audio": audio,
-                        }
+                    # Turn 1
+                    if len(item["a1"]) <= self.max_response_length:
+                        audio1 = self._process_audio(item["q1_audio"])
+                        if audio1 is not None:
+                            turns.append({
+                                "audio": audio1,
+                                "instruction": IF_INSTRUCTION,
+                                "response": item["a1"],
+                            })
+
+                    # Turn 2
+                    if len(item["a2"]) <= self.max_response_length:
+                        audio2 = self._process_audio(item["q2_audio"])
+                        if audio2 is not None:
+                            turns.append({
+                                "audio": audio2,
+                                "instruction": IF_INSTRUCTION,
+                                "response": item["a2"],
+                            })
+
+                    # Only yield if we have at least one valid turn
+                    if turns:
+                        yield {"turns": turns}
+
+                else:
+                    # Legacy single-turn mode: yield each turn separately
+                    if len(item["a1"]) <= self.max_response_length:
+                        audio1 = self._process_audio(item["q1_audio"])
+                        if audio1 is not None:
+                            yield {
+                                "instruction": IF_INSTRUCTION,
+                                "response": item["a1"],
+                                "audio": audio1,
+                            }
+
+                    if len(item["a2"]) <= self.max_response_length:
+                        audio2 = self._process_audio(item["q2_audio"])
+                        if audio2 is not None:
+                            yield {
+                                "instruction": IF_INSTRUCTION,
+                                "response": item["a2"],
+                                "audio": audio2,
+                            }
 
             except Exception as e:
                 print(f"[SpokenMultiturnSFT error] {type(e).__name__}: {e}")

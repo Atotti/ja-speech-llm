@@ -3,12 +3,14 @@
 from typing import Any, Dict, List
 
 import evaluate
+import numpy as np
 import torch
 import torchaudio
 import wandb
 from datasets import load_dataset, DownloadConfig
 
 from .datasets import ReazonSpeech, FSD50KCaptioned
+from .utils import pad_or_trim_audio, AFWHISPER_SAMPLE_RATE, AFWHISPER_MAX_SAMPLES
 
 
 def validate(
@@ -27,6 +29,9 @@ def validate(
 
     model.eval()
 
+    # Get encoder_type from model config
+    encoder_type = getattr(model.config, 'encoder_type', 'whisper')
+
     # ASR validation (ReazonSpeech test set)
     # Audio is inserted between <|reserved_343|> and <|reserved_342|>
     asr_prompt = """あなたは音声を理解できるAIアシスタントです。
@@ -38,13 +43,35 @@ def validate(
 """
 
     def asr_collate_fn(batch):
-        encoder_inputs = encoder_processor(
-            [item[0].squeeze(0).numpy() for item in batch],
-            return_tensors="pt",
-            return_attention_mask=True,
-            sampling_rate=16000,
-            device="cuda",
-        ).to("cuda")
+        audios = [item[0].squeeze(0).numpy() for item in batch]
+
+        if encoder_type in ("afwhisper", "qwen2-audio"):
+            # Qwen2AudioEncoder-based: pad/trim to fixed 30s length
+            original_lengths = [len(audio) for audio in audios]
+            audios = [pad_or_trim_audio(audio, AFWHISPER_MAX_SAMPLES) for audio in audios]
+
+            encoder_inputs = encoder_processor(
+                audios,
+                return_tensors="pt",
+                return_attention_mask=True,
+                sampling_rate=AFWHISPER_SAMPLE_RATE,
+            ).to("cuda")
+
+            # Create attention mask based on original audio lengths
+            mel_length = encoder_inputs.input_features.shape[-1]
+            original_mel_lengths = [min(int(l / 160), mel_length) for l in original_lengths]
+            encoder_attention_mask = torch.zeros(len(batch), mel_length, dtype=torch.long, device="cuda")
+            for i, mel_len in enumerate(original_mel_lengths):
+                encoder_attention_mask[i, :mel_len] = 1
+        else:
+            # Whisper: variable length processing
+            encoder_inputs = encoder_processor(
+                audios,
+                return_tensors="pt",
+                return_attention_mask=True,
+                sampling_rate=16000,
+            ).to("cuda")
+            encoder_attention_mask = encoder_inputs.attention_mask
 
         decoder_inputs = decoder_processor(
             [asr_prompt for _ in batch],
@@ -57,7 +84,7 @@ def validate(
         return {
             "input_features": encoder_inputs.input_features,
             "input_ids": decoder_inputs.input_ids,
-            "encoder_attention_mask": encoder_inputs.attention_mask,
+            "encoder_attention_mask": encoder_attention_mask,
             "decoder_attention_mask": decoder_inputs.attention_mask,
             "refs": refs,
         }
@@ -97,13 +124,35 @@ def validate(
 """
 
     def aac_collate_fn(batch):
-        encoder_inputs = encoder_processor(
-            [item["audio"].numpy() for item in batch],
-            return_tensors="pt",
-            return_attention_mask=True,
-            sampling_rate=16000,
-            device="cuda",
-        ).to("cuda")
+        audios = [item["audio"].numpy() for item in batch]
+
+        if encoder_type in ("afwhisper", "qwen2-audio"):
+            # Qwen2AudioEncoder-based: pad/trim to fixed 30s length
+            original_lengths = [len(audio) for audio in audios]
+            audios = [pad_or_trim_audio(audio, AFWHISPER_MAX_SAMPLES) for audio in audios]
+
+            encoder_inputs = encoder_processor(
+                audios,
+                return_tensors="pt",
+                return_attention_mask=True,
+                sampling_rate=AFWHISPER_SAMPLE_RATE,
+            ).to("cuda")
+
+            # Create attention mask based on original audio lengths
+            mel_length = encoder_inputs.input_features.shape[-1]
+            original_mel_lengths = [min(int(l / 160), mel_length) for l in original_lengths]
+            encoder_attention_mask = torch.zeros(len(batch), mel_length, dtype=torch.long, device="cuda")
+            for i, mel_len in enumerate(original_mel_lengths):
+                encoder_attention_mask[i, :mel_len] = 1
+        else:
+            # Whisper: variable length processing
+            encoder_inputs = encoder_processor(
+                audios,
+                return_tensors="pt",
+                return_attention_mask=True,
+                sampling_rate=16000,
+            ).to("cuda")
+            encoder_attention_mask = encoder_inputs.attention_mask
 
         decoder_inputs = decoder_processor(
             [aac_prompt for _ in batch],
@@ -116,7 +165,7 @@ def validate(
         return {
             "input_features": encoder_inputs.input_features,
             "input_ids": decoder_inputs.input_ids,
-            "encoder_attention_mask": encoder_inputs.attention_mask,
+            "encoder_attention_mask": encoder_attention_mask,
             "decoder_attention_mask": decoder_inputs.attention_mask,
             "refs": refs,
         }
@@ -191,8 +240,6 @@ def validate_finetune(
     use_librispeech: bool = True,
 ):
     """Validation for finetune: compute loss and generate samples on all enabled datasets."""
-    import numpy as np
-
     from .datasets import (
         IF_INSTRUCTION,
         SpokenMagpie,
@@ -204,7 +251,10 @@ def validate_finetune(
 
     model.eval()
 
-    # Prompt for generation (without response)
+    # Get encoder_type from model config
+    encoder_type = getattr(model.config, 'encoder_type', 'whisper')
+
+    # Prompt for generation (without response) - single turn
     # Audio is inserted between <|reserved_343|> and <|reserved_342|>
     gen_prompt = """あなたは音声を理解できるAIアシスタントです。
 
@@ -214,7 +264,7 @@ def validate_finetune(
 ### 応答:
 """
 
-    # Prompt for loss computation (with response)
+    # Prompt for loss computation (with response) - single turn
     loss_prompt = """あなたは音声を理解できるAIアシスタントです。
 
 <|reserved_343|><|reserved_342|>### 指示:
@@ -222,6 +272,56 @@ def validate_finetune(
 
 ### 応答:
 {}<|eos|>"""
+
+    # System prompt for multi-turn
+    system_prompt = "あなたは音声を理解できるAIアシスタントです。\n\n"
+
+    def build_multiturn_loss_prompt(turns: List[Dict]) -> str:
+        """Build prompt for multi-turn loss computation."""
+        prompt = system_prompt
+        for i, turn in enumerate(turns):
+            if turn.get("audio") is not None:
+                prompt += "<|reserved_343|><|reserved_342|>"
+            prompt += f"### 指示:\n{turn['instruction']}\n\n"
+            prompt += f"### 応答:\n{turn['response']}"
+            if i < len(turns) - 1:
+                prompt += "\n\n"
+            else:
+                prompt += "<|eos|>"
+        return prompt
+
+    def build_multiturn_gen_prompt(turns: List[Dict]) -> str:
+        """Build prompt for multi-turn generation (without last response)."""
+        prompt = system_prompt
+        for i, turn in enumerate(turns):
+            if turn.get("audio") is not None:
+                prompt += "<|reserved_343|><|reserved_342|>"
+            prompt += f"### 指示:\n{turn['instruction']}\n\n"
+            if i < len(turns) - 1:
+                # Previous turns: include response
+                prompt += f"### 応答:\n{turn['response']}\n\n"
+            else:
+                # Last turn: prompt for generation (no response)
+                prompt += "### 応答:\n"
+        return prompt
+
+    def process_audio_for_validation(audio: torch.Tensor) -> torch.Tensor:
+        """Process a single audio tensor for validation."""
+        audio_np = audio.numpy()
+        if encoder_type in ("afwhisper", "qwen2-audio"):
+            audio_np = pad_or_trim_audio(audio_np, AFWHISPER_MAX_SAMPLES)
+            features = encoder_processor(
+                audio_np,
+                return_tensors="pt",
+                sampling_rate=AFWHISPER_SAMPLE_RATE,
+            )
+        else:
+            features = encoder_processor(
+                audio_np,
+                return_tensors="pt",
+                sampling_rate=16000,
+            )
+        return features.input_features.squeeze(0).to("cuda")  # [feature_size, feature_length]
 
     # Define dataset configs
     dataset_configs = []
@@ -281,17 +381,25 @@ def validate_finetune(
 
         print(f"[validate_finetune] Evaluating {dataset_name}...")
 
-        # Load samples
+        # Load samples (handle both single-turn and multi-turn formats)
         samples = []
+        is_multiturn_dataset = False
+
         for i, item in enumerate(dataset):
             if i >= val_samples:
                 break
             try:
-                samples.append({
-                    "instruction": item["instruction"],
-                    "response": item["response"],
-                    "audio": item["audio"],
-                })
+                if "turns" in item:
+                    # Multi-turn format
+                    is_multiturn_dataset = True
+                    samples.append({"turns": item["turns"]})
+                else:
+                    # Single-turn format
+                    samples.append({
+                        "instruction": item["instruction"],
+                        "response": item["response"],
+                        "audio": item["audio"],
+                    })
             except Exception as e:
                 print(f"[validate_finetune/{dataset_name} error] {type(e).__name__}: {e}")
                 continue
@@ -304,31 +412,84 @@ def validate_finetune(
         total_loss = 0.0
         num_batches = 0
 
-        for i in range(0, len(samples), batch_size):
-            batch = samples[i:i + batch_size]
+        if is_multiturn_dataset:
+            # Multi-turn evaluation: process one sample at a time
+            for sample in samples:
+                turns = sample["turns"]
 
-            encoder_inputs = encoder_processor(
-                [item["audio"].numpy() for item in batch],
-                return_tensors="pt",
-                return_attention_mask=True,
-                sampling_rate=16000,
-            ).to("cuda")
+                # Build prompt and collect audios
+                prompt = build_multiturn_loss_prompt(turns)
+                sample_audios = []
+                for turn in turns:
+                    if turn.get("audio") is not None:
+                        audio_features = process_audio_for_validation(turn["audio"])
+                        sample_audios.append(audio_features)
 
-            decoder_inputs = decoder_processor(
-                [loss_prompt.format(item["instruction"], item["response"]) for item in batch],
-                padding=True,
-                return_tensors="pt",
-            ).to("cuda")
+                decoder_inputs = decoder_processor(
+                    [prompt],
+                    return_tensors="pt",
+                ).to("cuda")
 
-            with torch.no_grad(), torch.amp.autocast("cuda", dtype=torch.bfloat16):
-                loss = model(
-                    input_ids=decoder_inputs.input_ids,
-                    decoder_attention_mask=decoder_inputs.attention_mask,
-                    input_features=encoder_inputs.input_features,
-                    encoder_attention_mask=encoder_inputs.attention_mask,
-                )
-            total_loss += loss.item()
-            num_batches += 1
+                # Use new audios parameter for multi-turn
+                audios_batch = [sample_audios]  # List[List[Tensor]]
+
+                with torch.no_grad(), torch.amp.autocast("cuda", dtype=torch.bfloat16):
+                    loss = model(
+                        input_ids=decoder_inputs.input_ids,
+                        decoder_attention_mask=decoder_inputs.attention_mask,
+                        audios=audios_batch,
+                    )
+                total_loss += loss.item()
+                num_batches += 1
+        else:
+            # Single-turn evaluation: batch processing
+            for i in range(0, len(samples), batch_size):
+                batch = samples[i:i + batch_size]
+                audios = [item["audio"].numpy() for item in batch]
+
+                if encoder_type in ("afwhisper", "qwen2-audio"):
+                    # Qwen2AudioEncoder-based: pad/trim to fixed 30s length
+                    original_lengths = [len(audio) for audio in audios]
+                    audios = [pad_or_trim_audio(audio, AFWHISPER_MAX_SAMPLES) for audio in audios]
+
+                    encoder_inputs = encoder_processor(
+                        audios,
+                        return_tensors="pt",
+                        return_attention_mask=True,
+                        sampling_rate=AFWHISPER_SAMPLE_RATE,
+                    ).to("cuda")
+
+                    # Create attention mask based on original audio lengths
+                    mel_length = encoder_inputs.input_features.shape[-1]
+                    original_mel_lengths = [min(int(l / 160), mel_length) for l in original_lengths]
+                    encoder_attention_mask = torch.zeros(len(batch), mel_length, dtype=torch.long, device="cuda")
+                    for j, mel_len in enumerate(original_mel_lengths):
+                        encoder_attention_mask[j, :mel_len] = 1
+                else:
+                    # Whisper: variable length processing
+                    encoder_inputs = encoder_processor(
+                        audios,
+                        return_tensors="pt",
+                        return_attention_mask=True,
+                        sampling_rate=16000,
+                    ).to("cuda")
+                    encoder_attention_mask = encoder_inputs.attention_mask
+
+                decoder_inputs = decoder_processor(
+                    [loss_prompt.format(item["instruction"], item["response"]) for item in batch],
+                    padding=True,
+                    return_tensors="pt",
+                ).to("cuda")
+
+                with torch.no_grad(), torch.amp.autocast("cuda", dtype=torch.bfloat16):
+                    loss = model(
+                        input_ids=decoder_inputs.input_ids,
+                        decoder_attention_mask=decoder_inputs.attention_mask,
+                        input_features=encoder_inputs.input_features,
+                        encoder_attention_mask=encoder_attention_mask,
+                    )
+                total_loss += loss.item()
+                num_batches += 1
 
         avg_loss = total_loss / num_batches if num_batches > 0 else 0.0
         all_losses[dataset_name] = avg_loss
@@ -340,32 +501,95 @@ def validate_finetune(
         sample_instructions = []
 
         for item in samples[:gen_samples]:
-            encoder_inputs = encoder_processor(
-                [item["audio"].numpy()],
-                return_tensors="pt",
-                return_attention_mask=True,
-                sampling_rate=16000,
-            ).to("cuda")
+            if is_multiturn_dataset:
+                # Multi-turn generation
+                turns = item["turns"]
+                if not turns:
+                    continue
 
-            decoder_inputs = decoder_processor(
-                [gen_prompt.format(item["instruction"])],
-                return_tensors="pt",
-            ).to("cuda")
+                # Build generation prompt and collect audios
+                prompt = build_multiturn_gen_prompt(turns)
+                sample_audios = []
+                for turn in turns:
+                    if turn.get("audio") is not None:
+                        audio_features = process_audio_for_validation(turn["audio"])
+                        sample_audios.append(audio_features)
 
-            generated_ids = model.generate(
-                input_ids=decoder_inputs.input_ids,
-                decoder_attention_mask=decoder_inputs.attention_mask,
-                input_features=encoder_inputs.input_features,
-                encoder_attention_mask=encoder_inputs.attention_mask,
-                max_length=max_length,
-                do_sample=do_sample,
-                num_beams=num_beams,
-                pad_token_id=decoder_processor.eos_token_id,
-            )
-            hyp = decoder_processor.decode(generated_ids[0], skip_special_tokens=True)
-            sample_hyps.append(hyp)
-            sample_refs.append(item["response"])
-            sample_instructions.append(item["instruction"])
+                decoder_inputs = decoder_processor(
+                    [prompt],
+                    return_tensors="pt",
+                ).to("cuda")
+
+                # Use audios parameter for multi-turn
+                audios_batch = [sample_audios]  # List[List[Tensor]]
+
+                # Use max_new_tokens for multi-turn (inputs_embeds mode)
+                # max_length doesn't work well with inputs_embeds in Transformers
+                generated_ids = model.generate(
+                    input_ids=decoder_inputs.input_ids,
+                    decoder_attention_mask=decoder_inputs.attention_mask,
+                    audios=audios_batch,
+                    max_new_tokens=512,  # Generate up to 512 new tokens
+                    do_sample=do_sample,
+                    num_beams=num_beams,
+                    pad_token_id=decoder_processor.eos_token_id,
+                )
+                hyp = decoder_processor.decode(generated_ids[0], skip_special_tokens=True)
+                sample_hyps.append(hyp)
+                # Reference is the last turn's response
+                sample_refs.append(turns[-1]["response"])
+                # For multi-turn, show turn count and last instruction
+                sample_instructions.append(f"[{len(turns)}ターン] {turns[-1]['instruction']}")
+            else:
+                # Single-turn generation
+                audio = item["audio"].numpy()
+
+                if encoder_type in ("afwhisper", "qwen2-audio"):
+                    # Qwen2AudioEncoder-based: pad/trim to fixed 30s length
+                    original_length = len(audio)
+                    audio = pad_or_trim_audio(audio, AFWHISPER_MAX_SAMPLES)
+
+                    encoder_inputs = encoder_processor(
+                        [audio],
+                        return_tensors="pt",
+                        return_attention_mask=True,
+                        sampling_rate=AFWHISPER_SAMPLE_RATE,
+                    ).to("cuda")
+
+                    # Create attention mask based on original audio length
+                    mel_length = encoder_inputs.input_features.shape[-1]
+                    original_mel_length = min(int(original_length / 160), mel_length)
+                    encoder_attention_mask = torch.zeros(1, mel_length, dtype=torch.long, device="cuda")
+                    encoder_attention_mask[0, :original_mel_length] = 1
+                else:
+                    # Whisper: variable length processing
+                    encoder_inputs = encoder_processor(
+                        [audio],
+                        return_tensors="pt",
+                        return_attention_mask=True,
+                        sampling_rate=16000,
+                    ).to("cuda")
+                    encoder_attention_mask = encoder_inputs.attention_mask
+
+                decoder_inputs = decoder_processor(
+                    [gen_prompt.format(item["instruction"])],
+                    return_tensors="pt",
+                ).to("cuda")
+
+                generated_ids = model.generate(
+                    input_ids=decoder_inputs.input_ids,
+                    decoder_attention_mask=decoder_inputs.attention_mask,
+                    input_features=encoder_inputs.input_features,
+                    encoder_attention_mask=encoder_attention_mask,
+                    max_length=max_length,
+                    do_sample=do_sample,
+                    num_beams=num_beams,
+                    pad_token_id=decoder_processor.eos_token_id,
+                )
+                hyp = decoder_processor.decode(generated_ids[0], skip_special_tokens=True)
+                sample_hyps.append(hyp)
+                sample_refs.append(item["response"])
+                sample_instructions.append(item["instruction"])
 
         # Log samples to wandb table
         table = wandb.Table(columns=["Instruction", "Reference", "Prediction"])
