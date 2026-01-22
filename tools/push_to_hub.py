@@ -22,6 +22,13 @@ def _warn_if_local(model_id: str, label: str) -> None:
         print(f"WARNING: {label}_id is local path: {model_id}")
 
 
+def _strip_local_id(model_id: str, label: str) -> str | None:
+    if model_id and Path(model_id).exists():
+        print(f"INFO: stripping local {label}_id: {model_id}")
+        return None
+    return model_id
+
+
 def _write_minimal_package(save_path: Path) -> None:
     package_dir = save_path / "speech_llm_ja"
     package_dir.mkdir(parents=True, exist_ok=True)
@@ -66,6 +73,7 @@ def main() -> None:
         model.config.decoder_id = args.decoder_id
         model.config.text_config = AutoConfig.from_pretrained(args.decoder_id)
 
+    model.config.decoder_id = _strip_local_id(model.config.decoder_id, "decoder")
     model.config.audio_config = model.config.audio_config or model.encoder.config
     model.config.text_config = model.config.text_config or model.decoder.config
     model.config._sync_text_config(model.config.text_config)
