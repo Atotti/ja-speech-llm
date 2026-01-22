@@ -46,13 +46,11 @@ def _write_minimal_package(save_path: Path) -> None:
     processor_text = processor_src.read_text(encoding="utf-8")
     replaced = processor_text.replace(
         "from .model import AUDIO_TOKEN_ID",
-        "from speech_llm_ja_model import AUDIO_TOKEN_ID",
+        "AUDIO_TOKEN_ID = 351  # <|reserved_343|>",
     )
     if replaced == processor_text:
         raise ValueError("Failed to rewrite processor import for hub module.")
-    (save_path / "speech_llm_ja_processor.py").write_text(
-        replaced, encoding="utf-8"
-    )
+    (save_path / "speech_llm_ja_processor.py").write_text(replaced, encoding="utf-8")
 
 
 def _write_auto_map(save_path: Path) -> None:
