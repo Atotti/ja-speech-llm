@@ -36,22 +36,32 @@ def _write_minimal_package(save_path: Path) -> None:
         '"""Minimal package for remote loading."""\n',
         encoding="utf-8",
     )
-    (save_path / "speech_llm_ja_processor.py").write_text(
-        "from speech_llm_ja.processor import SpeechLlamaProcessor\n",
-        encoding="utf-8",
-    )
     repo_root = Path(__file__).resolve().parents[1]
-    shutil.copy2(repo_root / "src" / "speech_llm_ja" / "model.py", package_dir)
-    shutil.copy2(repo_root / "src" / "speech_llm_ja" / "processor.py", package_dir)
+    model_src = repo_root / "src" / "speech_llm_ja" / "model.py"
+    processor_src = repo_root / "src" / "speech_llm_ja" / "processor.py"
+    shutil.copy2(model_src, package_dir)
+    shutil.copy2(processor_src, package_dir)
+    shutil.copy2(model_src, save_path / "speech_llm_ja_model.py")
+
+    processor_text = processor_src.read_text(encoding="utf-8")
+    replaced = processor_text.replace(
+        "from .model import AUDIO_TOKEN_ID",
+        "from speech_llm_ja_model import AUDIO_TOKEN_ID",
+    )
+    if replaced == processor_text:
+        raise ValueError("Failed to rewrite processor import for hub module.")
+    (save_path / "speech_llm_ja_processor.py").write_text(
+        replaced, encoding="utf-8"
+    )
 
 
 def _write_auto_map(save_path: Path) -> None:
     config_path = save_path / "config.json"
     config = json.loads(config_path.read_text(encoding="utf-8"))
     config["auto_map"] = {
-        "AutoConfig": "speech_llm_ja.model.LlamaForSpeechLMConfig",
-        "AutoModel": "speech_llm_ja.model.LlamaForSpeechLM",
-        "AutoModelForCausalLM": "speech_llm_ja.model.LlamaForSpeechLM",
+        "AutoConfig": "speech_llm_ja_model.LlamaForSpeechLMConfig",
+        "AutoModel": "speech_llm_ja_model.LlamaForSpeechLM",
+        "AutoModelForCausalLM": "speech_llm_ja_model.LlamaForSpeechLM",
     }
     config["architectures"] = ["LlamaForSpeechLM"]
     config_path.write_text(
