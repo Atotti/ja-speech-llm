@@ -60,14 +60,30 @@ class SpeechLlamaProcessor(ProcessorMixin):
     @classmethod
     def from_pretrained(
         cls,
-        encoder_id: str,
-        decoder_id: str,
+        pretrained_model_name_or_path: str,
+        *,
+        encoder_id: Optional[str] = None,
+        decoder_id: Optional[str] = None,
         config: Optional[SpeechLlamaProcessorConfig] = None,
         **kwargs,
     ) -> "SpeechLlamaProcessor":
         kwargs.pop("trust_remote_code", None)
-        encoder_processor = AutoProcessor.from_pretrained(encoder_id)
-        tokenizer = AutoTokenizer.from_pretrained(decoder_id)
+        if encoder_id is None and decoder_id is None:
+            encoder_processor = AutoProcessor.from_pretrained(
+                pretrained_model_name_or_path, subfolder="encoder", **kwargs
+            )
+            tokenizer = AutoTokenizer.from_pretrained(
+                pretrained_model_name_or_path, subfolder="decoder", **kwargs
+            )
+            encoder_id = f"{pretrained_model_name_or_path}/encoder"
+            decoder_id = f"{pretrained_model_name_or_path}/decoder"
+        else:
+            if encoder_id is None or decoder_id is None:
+                raise ValueError(
+                    "encoder_id and decoder_id must be provided together."
+                )
+            encoder_processor = AutoProcessor.from_pretrained(encoder_id, **kwargs)
+            tokenizer = AutoTokenizer.from_pretrained(decoder_id, **kwargs)
         return cls(
             encoder_processor=encoder_processor,
             tokenizer=tokenizer,
