@@ -73,13 +73,15 @@ def _save_checkpoint(
         return
 
     # Unwrap model for saving
-    unwrapped_model = accelerator.unwrap_model(model)
-
+    unwrapped_model: LlamaForSpeechLM = accelerator.unwrap_model(model)
     Path(checkpoint_dir).mkdir(parents=True, exist_ok=True)
 
     if use_lora:
         # Save adapter, LoRA, and config separately
+        # LoRAをしている場合はAdapterはstate_dictで保存して、decoder,configはpretrained形式で保存
+        # なんで？ 
         torch.save(unwrapped_model.adapter.state_dict(), f"{checkpoint_dir}/adapter.pt")
+        # transformersのPreTrainedModelクラスのsave_pretrainedを使って保存
         unwrapped_model.decoder.save_pretrained(f"{checkpoint_dir}/lora")
         unwrapped_model.config.save_pretrained(checkpoint_dir)
         print(f"Checkpoint saved (LoRA): {checkpoint_dir}")
