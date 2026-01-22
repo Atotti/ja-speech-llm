@@ -61,6 +61,7 @@ def main() -> None:
     parser.add_argument("--hub-id", required=True)
     parser.add_argument("--encoder-id", default=None)
     parser.add_argument("--decoder-id", default=None)
+    parser.add_argument("--tokenizer-id", default=None)
     parser.add_argument("--commit-message", default="push model")
     args = parser.parse_args()
 
@@ -81,9 +82,15 @@ def main() -> None:
     _warn_if_local(model.config.encoder_id, "encoder")
     _warn_if_local(model.config.decoder_id, "decoder")
 
+    tokenizer_id = args.tokenizer_id or model.config.decoder_id
+    if not tokenizer_id:
+        raise ValueError(
+            "tokenizer_id is required when decoder_id is not set. "
+            "Pass --tokenizer-id with a tokenizer repo or local path."
+        )
     processor = SpeechLlamaProcessor.from_pretrained(
         encoder_id=model.config.encoder_id,
-        decoder_id=model.config.decoder_id,
+        decoder_id=tokenizer_id,
         config=SpeechLlamaProcessorConfig(
             adapter_kernel_size=model.config.adapter_kernel_size
         ),
