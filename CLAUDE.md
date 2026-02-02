@@ -58,9 +58,10 @@ The Japanese implementation is organized as a package under `src/speech_llm_ja/`
 src/speech_llm_ja/
 ├── __init__.py      # Public API exports
 ├── model.py         # Adapter, LlamaForSpeechLMConfig, LlamaForSpeechLM
-├── datasets.py      # All dataset classes (10 classes)
+├── datasets.py      # All dataset classes (11 classes including SpokenDPO)
 ├── train.py         # train(), _train(), get_lr_schedule(), _save_checkpoint()
 ├── finetune.py      # finetune()
+├── dpo.py           # dpo(), dpo_loss(), get_batch_logps()
 └── validate.py      # validate(), validate_finetune()
 ```
 
@@ -72,7 +73,8 @@ src/speech_llm_ja/
 **Training Pipeline**:
 1. `train()` (`src/speech_llm_ja/train.py:176`) - Pretrain on ReazonSpeech (Japanese ASR)
 2. `finetune()` (`src/speech_llm_ja/finetune.py:22`) - SFT on multiple datasets
-3. `validate()` (`src/speech_llm_ja/validate.py:14`) - Evaluate on ReazonSpeech test
+3. `dpo()` (`src/speech_llm_ja/dpo.py:125`) - DPO on spoken preference data
+4. `validate()` (`src/speech_llm_ja/validate.py:14`) - Evaluate on ReazonSpeech test
 
 **Finetune Modes** (mutually exclusive):
 | Mode | Parameter | Trainable Params |
@@ -126,6 +128,7 @@ src/speech_llm_ja/
 - `ReazonSpeechSFT` - ReazonSpeech in SFT format
 - `TextMultiturn` - Text-only multi-turn (for capability preservation)
 - `InterleavedDataset` - Interleave multiple datasets with configurable weights
+- `SpokenDPO` - Spoken preference data for DPO (`Atotti/spoken-dpo-49k`)
 
 ## Job Scripts (ABCI)
 
@@ -145,8 +148,18 @@ qsub -v MODEL_ID=models/LlamaForSpeechLM-ja-step45000 scripts/finetune_lora_ja.s
 # Finetune - Full decoder
 qsub -v MODEL_ID=models/LlamaForSpeechLM-ja-step45000 scripts/finetune_full_ja.sh
 
+# DPO - Adapter only (1GPU)
+qsub -v MODEL_ID=models/LlamaForSpeechLM-ja-Instruct-step5000 scripts/dpo_ja.sh
+
+# DPO - 8GPU Adapter (予約ノード)
+qsub -q R1512750 -v RTYPE=rt_HF,MODEL_ID=models/LlamaForSpeechLM-ja-Instruct-step5000 scripts/dpo_8gpu_ja.sh
+
+# DPO - 8GPU Full Decoder (予約ノード)
+qsub -q R1512750 -v RTYPE=rt_HF,MODEL_ID=models/LlamaForSpeechLM-ja-Instruct-step5000 scripts/dpo_full_8gpu_ja.sh
+
 # Resume (all scripts support RESUME_FROM)
 qsub -v RESUME_FROM=models/LlamaForSpeechLM-ja-Instruct-step1000 scripts/finetune_adapter_ja.sh
+qsub -v RESUME_FROM=models/LlamaForSpeechLM-ja-DPO-step500 scripts/dpo_ja.sh
 ```
 
 ## Training Notes
@@ -154,8 +167,12 @@ qsub -v RESUME_FROM=models/LlamaForSpeechLM-ja-Instruct-step1000 scripts/finetun
 - **Mixed Precision**: BFloat16 (no GradScaler needed)
 - **LoRA dtype**: Explicitly converted to bfloat16 after PEFT initialization
 - **Recommended LR**:
-  - Adapter/LoRA: `1e-3` ~ `1e-4`
-  - Full decoder: `1e-5`
+  - Pretrain/SFT Adapter/LoRA: `1e-3` ~ `1e-4`
+  - Pretrain/SFT Full decoder: `1e-5`
+  - DPO: `1e-5` ~ `1e-6` (lower than SFT)
+- **DPO Parameters**:
+  - `beta`: Temperature parameter (default: 0.1)
+  - Reference model: Frozen copy of initial policy model
 
 ## Hardware Requirements
 

@@ -39,6 +39,7 @@ from speech_llm_ja import (
     ReazonSpeechSFT,
     TextMultiturn,
     InterleavedDataset,
+    SpokenDPO,
     IF_INSTRUCTION,
     # Training
     train,
@@ -46,6 +47,9 @@ from speech_llm_ja import (
     get_lr_schedule,
     _save_checkpoint,
     finetune,
+    dpo,
+    dpo_loss,
+    get_batch_logps,
     # Validation
     validate,
     validate_finetune,
@@ -68,6 +72,7 @@ __all__ = [
     "ReazonSpeechSFT",
     "TextMultiturn",
     "InterleavedDataset",
+    "SpokenDPO",
     "IF_INSTRUCTION",
     # Training
     "train",
@@ -75,6 +80,9 @@ __all__ = [
     "get_lr_schedule",
     "_save_checkpoint",
     "finetune",
+    "dpo",
+    "dpo_loss",
+    "get_batch_logps",
     # Validation
     "validate",
     "validate_finetune",

@@ -460,3 +460,95 @@ class InterleavedDataset(torch.utils.data.IterableDataset):
                 # Dataset exhausted, restart from beginning
                 iterators[idx] = iter(self.datasets[idx])
                 yield next(iterators[idx])
+
+
+class SpokenDPO(torch.utils.data.IterableDataset):
+    """Spoken DPO dataset (Atotti/spoken-dpo-49k).
+
+    Dataset format:
+        - prompt: List of conversation turns with audio [{from, value, audio: {array, sampling_rate}}]
+        - chosen: Preferred response text
+        - rejected: Non-preferred response text
+
+    Yields:
+        dict with keys: instruction, audio, chosen, rejected
+    """
+
+    # Estimated dataset size (for LR scheduler calculation)
+    ESTIMATED_SIZE = 43000
+
+    def __init__(
+        self,
+        dataset_id: str = "Atotti/spoken-dpo-49k",
+        split: str = "train",
+        max_duration: float = 30.0,
+        max_response_length: int = 2048,
+    ):
+        """
+        Args:
+            dataset_id: HuggingFace dataset ID
+            split: Dataset split
+            max_duration: Maximum audio duration in seconds
+            max_response_length: Maximum response text length (for both chosen and rejected)
+        """
+        dl_config = DownloadConfig(resume_download=True, max_retries=10)
+        self.dataset = load_dataset(dataset_id, split=split, streaming=True, download_config=dl_config)
+        self.max_duration = max_duration
+        self.max_response_length = max_response_length
+
+    def __len__(self):
+        """Return estimated dataset size (used for LR scheduler)."""
+        return self.ESTIMATED_SIZE
+
+    def __iter__(self):
+        import numpy as np
+
+        for item in self.dataset:
+            try:
+                # Filter by response length
+                if len(item["chosen"]) > self.max_response_length:
+                    continue
+                if len(item["rejected"]) > self.max_response_length:
+                    continue
+
+                # Extract audio from prompt (first human turn with audio)
+                prompt_turns = item["prompt"]
+                audio_tensor = None
+                instruction_text = ""
+
+                for turn in prompt_turns:
+                    if turn.get("from") == "human":
+                        instruction_text = turn.get("value", "")
+                        audio_data = turn.get("audio")
+                        if audio_data is not None:
+                            wav = audio_data.get("array")
+                            sr = audio_data.get("sampling_rate", 16000)
+
+                            if wav is not None:
+                                if isinstance(wav, list):
+                                    wav = np.array(wav, dtype=np.float32)
+
+                                # Duration filter
+                                if len(wav) / sr > self.max_duration:
+                                    audio_tensor = None
+                                    break
+
+                                audio_tensor = torch.from_numpy(wav).float()
+                                if sr != 16000:
+                                    audio_tensor = torchaudio.functional.resample(audio_tensor, sr, 16000)
+                        break  # Only use first human turn
+
+                # Skip if no valid audio found
+                if audio_tensor is None:
+                    continue
+
+                yield {
+                    "instruction": IF_INSTRUCTION,  # Audio IS the instruction
+                    "audio": audio_tensor,
+                    "chosen": item["chosen"],
+                    "rejected": item["rejected"],
+                }
+
+            except Exception as e:
+                print(f"[SpokenDPO error] {type(e).__name__}: {e}")
+                continue

@@ -11,10 +11,12 @@ from .datasets import (
     ReazonSpeechSFT,
     TextMultiturn,
     InterleavedDataset,
+    SpokenDPO,
     IF_INSTRUCTION,
 )
 from .train import train, _train, get_lr_schedule, _save_checkpoint
 from .finetune import finetune
+from .dpo import dpo, dpo_loss, get_batch_logps
 from .validate import validate, validate_finetune
 
 __all__ = [
@@ -34,6 +36,7 @@ __all__ = [
     "ReazonSpeechSFT",
     "TextMultiturn",
     "InterleavedDataset",
+    "SpokenDPO",
     "IF_INSTRUCTION",
     # Training
     "train",
@@ -41,6 +44,9 @@ __all__ = [
     "get_lr_schedule",
     "_save_checkpoint",
     "finetune",
+    "dpo",
+    "dpo_loss",
+    "get_batch_logps",
     # Validation
     "validate",
     "validate_finetune",

@@ -22,6 +22,7 @@ dependencies = [
     "torchaudio==2.5.1",
     "tqdm>=4.67.1",
     "transformers==4.51.0",
+    "trl>=0.19.1",
     "wandb>=0.23.1",
 ]
 
