@@ -15,7 +15,7 @@ from demo2_ja import LlamaForSpeechLM, LlamaForSpeechLMConfig
 # =============================================================================
 # Configuration
 # =============================================================================
-MODEL_ID = "Atotti/LlamaForSpeechLM-ja-Instruct-Full-20260119-184726-step15000"
+MODEL_ID = "Atotti/LlamaForSpeechLM-ja-Instruct-Full-step30000"
 DECODER_ID = "models/v4-8b-decay2m-ipt_v3.1-instruct4"
 MAX_AUDIO_DURATION = 30.0
 
@@ -83,7 +83,13 @@ print(f"Loading model: {MODEL_ID}")
 config = LlamaForSpeechLMConfig.from_pretrained(MODEL_ID)
 config.decoder_id = DECODER_ID
 
-model = LlamaForSpeechLM.from_pretrained(MODEL_ID, config=config).cuda().eval()
+model = LlamaForSpeechLM.from_pretrained(
+    MODEL_ID,
+    config=config,
+    device_map="auto",
+    torch_dtype=torch.bfloat16,
+    low_cpu_mem_usage=True,
+).eval()
 
 encoder_processor = AutoProcessor.from_pretrained(model.config.encoder_id)
 decoder_processor = AutoTokenizer.from_pretrained(DECODER_ID)
