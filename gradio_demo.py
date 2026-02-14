@@ -56,23 +56,40 @@ DEFAULT_GENERATION_PARAMS = {
 SYSTEM_PROMPT = "あなたは音声を理解できるAIアシスタントです。\n\n"
 
 
-def build_multiturn_prompt(turns, current_instruction):
+def build_multiturn_prompt(turns, current_instruction, current_has_audio=True):
     """Multi-turn形式のプロンプトを構築する。
 
     Args:
-        turns: 過去のターンのリスト [{"instruction": str, "response": str}, ...]
+        turns: 過去のターンのリスト [{"instruction": str, "response": str, "audio_features": ...}, ...]
         current_instruction: 現在のターンの指示文
+        current_has_audio: 現在のターンに音声があるか
 
     Returns:
         Multi-turn形式のプロンプト文字列
     """
     prompt = SYSTEM_PROMPT
+    audio_marker_count = 0  # デバッグ用
+
     for turn in turns:
-        prompt += f"<|reserved_343|><|reserved_342|>### 指示:\n{turn['instruction']}\n\n"
+        # 音声があるターンのみに音声マーカーを追加
+        if "audio_features" in turn:
+            prompt += f"<|reserved_343|><|reserved_342|>### 指示:\n{turn['instruction']}\n\n"
+            audio_marker_count += 1
+        else:
+            prompt += f"### 指示:\n{turn['instruction']}\n\n"
         prompt += f"### 応答:\n{turn['response']}\n\n"
     # 現在のターン（応答なし）
-    prompt += f"<|reserved_343|><|reserved_342|>### 指示:\n{current_instruction}\n\n"
+    if current_has_audio:
+        prompt += f"<|reserved_343|><|reserved_342|>### 指示:\n{current_instruction}\n\n"
+        audio_marker_count += 1
+    else:
+        prompt += f"### 指示:\n{current_instruction}\n\n"
     prompt += "### 応答:\n"
+
+    # デバッグログ
+    print(f"[DEBUG build_multiturn_prompt] Audio markers in prompt: {audio_marker_count}")
+    print(f"[DEBUG build_multiturn_prompt] Prompt preview: {prompt[:500]}...")
+
     return prompt
 
 # =============================================================================
@@ -203,14 +220,25 @@ def chat(audio_tuple, history, mode, conversation_turns,
 
     if is_multiturn:
         # Multi-turn: use audios parameter
-        prompt = build_multiturn_prompt(conversation_turns, instruction)
+        prompt = build_multiturn_prompt(conversation_turns, instruction, current_has_audio=True)
         decoder_inputs = decoder_processor(
             prompt,
             return_tensors="pt",
         ).to("cuda")
 
+        # デバッグログ：実際にモデルに渡されるプロンプトを表示（音声モード）
+        decoded_prompt = decoder_processor.decode(decoder_inputs.input_ids[0], skip_special_tokens=False)
+        print(f"[DEBUG chat multi-turn] Decoded prompt length: {len(decoded_prompt)} chars, {decoder_inputs.input_ids.shape[1]} tokens")
+        print(f"[DEBUG chat multi-turn] Decoded prompt:\n{'='*80}\n{decoded_prompt}\n{'='*80}")
+
         # Build audios list: past audio features + current audio features
-        audios = [[turn["audio_features"] for turn in conversation_turns] + [current_audio_features]]
+        # Filter out text-only turns that don't have audio_features
+        audios = [[turn["audio_features"] for turn in conversation_turns if "audio_features" in turn] + [current_audio_features]]
+
+        # デバッグログ（音声チャットのマルチターン）
+        print(f"[DEBUG chat multi-turn] audios structure: {len(audios)} batches, {len(audios[0])} audios")
+        if audios[0]:
+            print(f"[DEBUG chat multi-turn] First audio shape: {audios[0][0].shape}")
 
         generation_kwargs = {
             "input_ids": decoder_inputs.input_ids,
@@ -231,6 +259,11 @@ def chat(audio_tuple, history, mode, conversation_turns,
             prompt,
             return_tensors="pt",
         ).to("cuda")
+
+        # デバッグログ：実際にモデルに渡されるプロンプトを表示（シングルターン）
+        decoded_prompt = decoder_processor.decode(decoder_inputs.input_ids[0], skip_special_tokens=False)
+        print(f"[DEBUG chat single-turn] Decoded prompt length: {len(decoded_prompt)} chars, {decoder_inputs.input_ids.shape[1]} tokens")
+        print(f"[DEBUG chat single-turn] Decoded prompt:\n{'='*80}\n{decoded_prompt}\n{'='*80}")
 
         generation_kwargs = {
             "input_features": encoder_inputs.input_features,
@@ -265,6 +298,111 @@ def chat(audio_tuple, history, mode, conversation_turns,
             "instruction": instruction,
             "response": generated_text,
         }]
+
+    yield history, conversation_turns
+
+
+def text_chat(message, history, conversation_turns,
+              temperature, top_p, max_new_tokens, do_sample):
+    """Process text input and generate streaming response (text-only mode).
+
+    Args:
+        message: User's text message
+        history: Gradio chat history for display
+        conversation_turns: List of past turns for multi-turn conversation
+        temperature: Sampling temperature
+        top_p: Top-p sampling parameter
+        max_new_tokens: Maximum number of tokens to generate
+        do_sample: Whether to use sampling
+
+    Yields:
+        Updated (history, conversation_turns) tuples
+    """
+    if not message or not message.strip():
+        yield history, conversation_turns
+        return
+
+    # Add user message
+    history = history + [{"role": "user", "content": message}]
+    yield history, conversation_turns
+
+    # Build prompt for text-only mode (no audio)
+    if len(conversation_turns) > 0:
+        # Multi-turn conversation
+        # デバッグログ：conversation_turnsの内容を確認
+        print(f"[DEBUG text_chat] conversation_turns count: {len(conversation_turns)}")
+        for i, turn in enumerate(conversation_turns):
+            has_audio = "audio_features" in turn
+            instruction_preview = turn['instruction'][:50] + "..." if len(turn['instruction']) > 50 else turn['instruction']
+            response_preview = turn['response'][:50] + "..." if len(turn['response']) > 50 else turn['response']
+            print(f"[DEBUG text_chat]   Turn {i}: has_audio={has_audio}, instruction='{instruction_preview}', response='{response_preview}'")
+
+        prompt = build_multiturn_prompt(conversation_turns, message, current_has_audio=False)
+    else:
+        # Single-turn
+        prompt = f"{SYSTEM_PROMPT}### 指示:\n{message}\n\n### 応答:\n"
+
+    # Tokenize prompt
+    decoder_inputs = decoder_processor(
+        prompt,
+        return_tensors="pt",
+    ).to("cuda")
+
+    # デバッグログ：実際にモデルに渡されるプロンプトを表示
+    decoded_prompt = decoder_processor.decode(decoder_inputs.input_ids[0], skip_special_tokens=False)
+    print(f"[DEBUG text_chat] Decoded prompt length: {len(decoded_prompt)} chars, {decoder_inputs.input_ids.shape[1]} tokens")
+    print(f"[DEBUG text_chat] Decoded prompt:\n{'='*80}\n{decoded_prompt}\n{'='*80}")
+
+    # Setup streamer
+    streamer = TextIteratorStreamer(
+        decoder_processor,
+        skip_prompt=True,
+        skip_special_tokens=True,
+    )
+
+    # Collect past audio features for multi-turn context
+    past_audio_features = [turn["audio_features"] for turn in conversation_turns if "audio_features" in turn]
+
+    # デバッグログ
+    print(f"[DEBUG text_chat] past_audio_features count: {len(past_audio_features)}")
+    if past_audio_features:
+        print(f"[DEBUG text_chat] First audio feature shape: {past_audio_features[0].shape}")
+        print(f"[DEBUG text_chat] First audio feature device: {past_audio_features[0].device}")
+
+    # Generate (text mode with past audio context)
+    generation_kwargs = {
+        "input_ids": decoder_inputs.input_ids,
+        "decoder_attention_mask": decoder_inputs.attention_mask,
+        "audios": [past_audio_features],  # Include past audio features for context
+        "max_new_tokens": max_new_tokens,
+        "do_sample": do_sample,
+        "temperature": temperature if do_sample else 1.0,
+        "top_p": top_p if do_sample else 1.0,
+        "num_beams": 1,
+        "streamer": streamer,
+        "pad_token_id": decoder_processor.eos_token_id,
+    }
+
+    print(f"[DEBUG text_chat] audios structure: {len(generation_kwargs['audios'])} batches, {len(generation_kwargs['audios'][0])} audios")
+
+    thread = Thread(target=model.generate, kwargs=generation_kwargs)
+    thread.start()
+
+    # Stream response
+    history = history + [{"role": "assistant", "content": ""}]
+    generated_text = ""
+    for token in streamer:
+        generated_text += token
+        history[-1]["content"] = generated_text
+        yield history, conversation_turns
+
+    thread.join()
+
+    # Update conversation state (text-only turns don't have audio_features)
+    conversation_turns = conversation_turns + [{
+        "instruction": message,
+        "response": generated_text,
+    }]
 
     yield history, conversation_turns
 
@@ -491,6 +629,14 @@ def create_demo() -> gr.Blocks:
             elem_classes=["audio-container"],
         )
 
+        with gr.Row():
+            text_input = gr.Textbox(
+                placeholder="またはテキストで入力...",
+                show_label=False,
+                scale=9,
+            )
+            text_submit = gr.Button("送信", scale=1)
+
         # Process audio when recording stops
         audio_input.stop_recording(
             fn=chat,
@@ -502,6 +648,31 @@ def create_demo() -> gr.Blocks:
         ).then(
             fn=lambda: None,
             outputs=audio_input,
+        )
+
+        # Process text input when submitted
+        text_submit.click(
+            fn=text_chat,
+            inputs=[
+                text_input, chatbot, conversation_state,
+                temperature, top_p, max_new_tokens, do_sample
+            ],
+            outputs=[chatbot, conversation_state],
+        ).then(
+            fn=lambda: "",
+            outputs=text_input,
+        )
+
+        text_input.submit(
+            fn=text_chat,
+            inputs=[
+                text_input, chatbot, conversation_state,
+                temperature, top_p, max_new_tokens, do_sample
+            ],
+            outputs=[chatbot, conversation_state],
+        ).then(
+            fn=lambda: "",
+            outputs=text_input,
         )
 
         # Clear both chat history and conversation state
