@@ -15,7 +15,7 @@ from demo2_ja import LlamaForSpeechLM, LlamaForSpeechLMConfig
 # =============================================================================
 # Configuration
 # =============================================================================
-MODEL_ID = "Atotti/LlamaForSpeechLM-ja-Instruct-Full-step30000"
+MODEL_ID = "Atotti/LlamaForSpeechLM-ja-DPO-Full-step8000"
 DECODER_ID = "models/v4-8b-decay2m-ipt_v3.1-instruct4"
 MAX_AUDIO_DURATION = 30.0
 
@@ -275,9 +275,14 @@ def chat(audio_tuple, history, mode, conversation_turns,
 CUSTOM_CSS = """
 /* Global styles */
 .gradio-container {
-    max-width: 800px !important;
+    width: 60vw !important;
     margin: auto !important;
     font-family: 'Segoe UI', 'Hiragino Sans', 'Meiryo', sans-serif !important;
+}
+
+/* Hide Gradio default footer */
+footer {
+    display: none !important;
 }
 
 /* Header */
@@ -305,6 +310,8 @@ CUSTOM_CSS = """
     border-radius: 20px !important;
     box-shadow: 0 4px 24px rgba(0, 0, 0, 0.08) !important;
     background: #fafafa !important;
+    width: 100% !important;
+    max-width: 100% !important;
 }
 
 /* Messages */
@@ -393,12 +400,19 @@ CUSTOM_CSS = """
 
 def create_demo() -> gr.Blocks:
     with gr.Blocks(title="日本語音声LLM デモ", theme=gr.themes.Soft()) as demo:
-        gr.Markdown("# 日本語音声LLM", elem_classes=["header-title"])
-        gr.Markdown("音声で話しかけると、AIがリアルタイムで応答します", elem_classes=["header-subtitle"])
-
         # Sidebar for advanced settings
         with gr.Sidebar(position="right", open=False):
             gr.Markdown("## 詳細設定")
+
+            # Response mode section
+            gr.Markdown("### 応答モード", elem_classes=["sidebar-section"])
+            mode_selector = gr.Radio(
+                choices=list(RESPONSE_MODES.keys()),
+                value="音声指示 (IF)",
+                label="モード選択",
+            )
+
+            gr.HTML('<div class="sidebar-divider"></div>')
 
             # Custom prompt section
             gr.Markdown("### カスタムプロンプト", elem_classes=["sidebar-section"])
@@ -444,6 +458,15 @@ def create_demo() -> gr.Blocks:
                 label="Max tokens",
             )
 
+            gr.HTML('<div class="sidebar-divider"></div>')
+
+            # Clear button and model info
+            clear_btn = gr.Button("クリア", elem_classes=["clear-btn"])
+            gr.Markdown(
+                f"Model: `{MODEL_ID}`",
+                elem_classes=["footer"],
+            )
+
         # Template selection updates custom_instruction
         template_dropdown.change(
             fn=lambda t: PROMPT_TEMPLATES.get(t, ""),
@@ -455,33 +478,17 @@ def create_demo() -> gr.Blocks:
         conversation_state = gr.State([])
 
         chatbot = gr.Chatbot(
-            height=480,
+            height="75vh",
             show_label=False,
             elem_classes=["chatbot-container"],
             layout="bubble",
         )
 
-        with gr.Row():
-            mode_selector = gr.Radio(
-                choices=list(RESPONSE_MODES.keys()),
-                value="音声指示 (IF)",
-                label="応答モード",
-            )
-
-        with gr.Row():
-            audio_input = gr.Audio(
-                sources=["microphone"],
-                type="numpy",
-                label="マイクをクリックして話す",
-                elem_classes=["audio-container"],
-            )
-
-        with gr.Row():
-            clear_btn = gr.Button("クリア", elem_classes=["clear-btn"])
-
-        gr.Markdown(
-            f"Model: `{MODEL_ID}`",
-            elem_classes=["footer"],
+        audio_input = gr.Audio(
+            sources=["microphone"],
+            type="numpy",
+            label="マイクをクリックして話す",
+            elem_classes=["audio-container"],
         )
 
         # Process audio when recording stops
