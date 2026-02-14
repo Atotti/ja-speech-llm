@@ -1,4 +1,9 @@
 """Compute CER/WER for Japanese ASR model (LlamaForSpeechLM)."""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 import json
 import os
 import argparse
@@ -12,7 +17,7 @@ from datasets import load_dataset
 from evaluate import load
 from tqdm import tqdm
 
-from demo2_ja import LlamaForSpeechLM
+from src.speech_llm_ja import LlamaForSpeechLM
 
 
 def resample_audio(audio_array, orig_sr: int, target_sr: int = 16000):
@@ -77,10 +82,10 @@ def run_inference(
 
         with torch.inference_mode():
             generated_ids = model.generate(
-                encoder_inputs.input_features,
                 decoder_inputs.input_ids,
-                encoder_inputs.attention_mask,
                 decoder_inputs.attention_mask,
+                encoder_inputs.input_features,
+                encoder_inputs.attention_mask,
                 max_new_tokens=max_length,
                 do_sample=False,
                 num_beams=1,

@@ -3,7 +3,7 @@
 #PBS -q rt_HG
 #PBS -N sft-adapter
 #PBS -l select=1:ncpus=24:ngpus=1
-#PBS -l walltime=48:00:00
+#PBS -l walltime=168:00:00
 #PBS -o logs/
 #PBS -e logs/
 #PBS -m n
@@ -26,10 +26,10 @@ echo "Mode: Adapter only"
 
 if [ -n "$RESUME_FROM" ]; then
     echo "Resuming from: $RESUME_FROM"
-    uv run python -c "from demo2_ja import finetune; finetune(resume_from='${RESUME_FROM}', max_steps=1000000, batch_size=8, grad_accumulation=8, warmup_steps=100, val_check_interval=1000, model_dir='models/LlamaForSpeechLM-ja-Instruct-${TIMESTAMP}')"
+    uv run python -c "from demo2_ja import finetune; finetune(resume_from='${RESUME_FROM}', max_steps=1000000000, batch_size=8, grad_accumulation=16, warmup_steps=100, val_check_interval=1000, model_dir='models/LlamaForSpeechLM-ja-Instruct-${TIMESTAMP}')"
 elif [ -n "$MODEL_ID" ]; then
     echo "Starting from: $MODEL_ID"
-    uv run python -c "from demo2_ja import finetune; finetune(model_id='${MODEL_ID}', max_steps=1000000, batch_size=8, grad_accumulation=8, warmup_steps=100, val_check_interval=1000, model_dir='models/LlamaForSpeechLM-ja-Instruct-${TIMESTAMP}')"
+    uv run python -c "from demo2_ja import finetune; finetune(model_id='${MODEL_ID}', max_steps=1000000000, batch_size=8, grad_accumulation=16, warmup_steps=100, val_check_interval=1000, model_dir='models/LlamaForSpeechLM-ja-Instruct-${TIMESTAMP}')"
 else
     echo "Error: MODEL_ID or RESUME_FROM is required"
     exit 1

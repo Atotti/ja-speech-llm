@@ -3,7 +3,7 @@
 #PBS -q rt_HG
 #PBS -N sft-lora
 #PBS -l select=1:ncpus=24:ngpus=1
-#PBS -l walltime=48:00:00
+#PBS -l walltime=168:00:00
 #PBS -o logs/
 #PBS -e logs/
 #PBS -m n
@@ -27,10 +27,10 @@ echo "Mode: LoRA (adapter + LoRA)"
 
 if [ -n "$RESUME_FROM" ]; then
     echo "Resuming from: $RESUME_FROM"
-    uv run python -c "from demo2_ja import finetune; finetune(resume_from='${RESUME_FROM}', use_lora=True, max_steps=100000, batch_size=4, grad_accumulation=8, warmup_steps=100, val_check_interval=1000, model_dir='models/LlamaForSpeechLM-ja-Instruct-LoRA-${TIMESTAMP}')"
+    uv run python -c "from demo2_ja import finetune; finetune(resume_from='${RESUME_FROM}', use_lora=True, max_steps=100000, batch_size=4, grad_accumulation=32, warmup_steps=100, val_check_interval=1000, model_dir='models/LlamaForSpeechLM-ja-Instruct-LoRA-${TIMESTAMP}')"
 elif [ -n "$MODEL_ID" ]; then
     echo "Starting from: $MODEL_ID"
-    uv run python -c "from demo2_ja import finetune; finetune(model_id='${MODEL_ID}', use_lora=True, max_steps=100000, batch_size=4, grad_accumulation=8, warmup_steps=100, val_check_interval=1000, model_dir='models/LlamaForSpeechLM-ja-Instruct-LoRA-${TIMESTAMP}')"
+    uv run python -c "from demo2_ja import finetune; finetune(model_id='${MODEL_ID}', use_lora=True, max_steps=100000, batch_size=4, grad_accumulation=32, warmup_steps=100, val_check_interval=1000, model_dir='models/LlamaForSpeechLM-ja-Instruct-LoRA-${TIMESTAMP}')"
 else
     echo "Error: MODEL_ID or RESUME_FROM is required"
     exit 1
