@@ -36,7 +36,7 @@ def finetune(
     model_dir="models/LlamaForSpeechLM-ja-Instruct",
     # For fresh model creation (used when model_id is None)
     encoder_id: str = "openai/whisper-large-v3",
-    decoder_id: str = "/groups/gch51701/Team031/model/pretrained/v4-8b-decay2m-ipt_v3.1-instruct4",
+    decoder_id: str = "your-decoder-model-path",
     encoder_type: str = "whisper",  # "whisper", "afwhisper", or "qwen2-audio"
     batch_size: int = 4,
     lr: float = 1e-4,

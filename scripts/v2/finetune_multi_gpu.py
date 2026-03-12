@@ -27,7 +27,7 @@ def main():
     parser.add_argument("--model-dir", default="models/v2/LlamaForSpeechLM-ja-Instruct")
     parser.add_argument("--encoder-id", default="openai/whisper-large-v3", help="Encoder model (for fresh model creation)")
     parser.add_argument("--encoder-type", default="whisper", choices=["whisper", "afwhisper", "qwen2-audio"], help="Encoder type")
-    parser.add_argument("--decoder-id", default="/groups/gch51701/Team031/model/pretrained/v4-8b-decay2m-ipt_v3.1-instruct4", help="Decoder model (for fresh model creation)")
+    parser.add_argument("--decoder-id", default="your-decoder-model-path", help="Decoder model (for fresh model creation)")
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--epoch", type=int, default=5)

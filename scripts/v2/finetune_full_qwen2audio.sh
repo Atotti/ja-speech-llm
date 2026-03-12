@@ -1,5 +1,5 @@
 #!/bin/bash
-#PBS -P gch51701
+#PBS -P YOUR_PROJECT_ID
 #PBS -q rt_HG
 #PBS -N sft-full-qwen2audio
 #PBS -l select=1:ncpus=24:ngpus=1
@@ -32,7 +32,7 @@ echo "LR: 1e-4"
 echo "Walltime: 168:00:00"
 
 uv run python -c "
-from demo2_ja import finetune
+from speech_llm_ja import finetune
 finetune(
     encoder_id='Atotti/qwen2-audio-encoder',
     encoder_type='qwen2-audio',

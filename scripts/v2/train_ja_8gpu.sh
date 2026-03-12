@@ -1,5 +1,5 @@
 #!/bin/bash
-#PBS -P gch51701
+#PBS -P YOUR_PROJECT_ID
 #PBS -q rt_HF
 #PBS -N speech-llm-ja-8gpu
 #PBS -l select=1:ncpus=192:ngpus=8

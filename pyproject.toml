@@ -1,7 +1,7 @@
 [project]
-name = "ayu-slp2025"
+name = "ja-speech-llm"
 version = "0.1.0"
-description = "Add your description here"
+description = "Japanese Speech LLM: Whisper-large-v3 + LLM-jp with trainable adapter"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

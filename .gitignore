@@ -4,3 +4,6 @@ runs/
 models/
 wandb/
 logs/
+clean/
+.venv/
+*.pdf

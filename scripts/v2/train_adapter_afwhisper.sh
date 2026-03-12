@@ -1,5 +1,5 @@
 #!/bin/bash
-#PBS -P gch51701
+#PBS -P YOUR_PROJECT_ID
 #PBS -q rt_HG
 #PBS -N train-afwhisper-adapter
 #PBS -l select=1:ncpus=24:ngpus=1
@@ -30,7 +30,7 @@ echo "Batch: 2 x 64 = 128"
 echo "LR: 1e-3"
 
 uv run python -c "
-from demo2_ja import finetune
+from speech_llm_ja import finetune
 finetune(
     encoder_id='Atotti/AFWhisper',
     encoder_type='afwhisper',

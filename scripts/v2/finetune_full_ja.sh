@@ -1,5 +1,5 @@
 #!/bin/bash
-#PBS -P gch51701
+#PBS -P YOUR_PROJECT_ID
 #PBS -q rt_HG
 #PBS -N sft-full-v2
 #PBS -l select=1:ncpus=24:ngpus=1
@@ -54,13 +54,13 @@ fi
 
 if [ -n "$RESUME_FROM" ]; then
     echo "Resuming from: $RESUME_FROM"
-    uv run python -c "from demo2_ja import finetune; finetune(resume_from='${RESUME_FROM}', ${WEIGHTS_ARG} unfreeze_decoder=True, use_text_multiturn=True, lr=${LR_VALUE}, max_steps=1000000000, batch_size=2, grad_accumulation=64, warmup_steps=100, val_check_interval=1000, model_dir='models/v2/LlamaForSpeechLM-ja-Instruct-Full-${TIMESTAMP}')"
+    uv run python -c "from speech_llm_ja import finetune; finetune(resume_from='${RESUME_FROM}', ${WEIGHTS_ARG} unfreeze_decoder=True, use_text_multiturn=True, lr=${LR_VALUE}, max_steps=1000000000, batch_size=2, grad_accumulation=64, warmup_steps=100, val_check_interval=1000, model_dir='models/v2/LlamaForSpeechLM-ja-Instruct-Full-${TIMESTAMP}')"
 elif [ -n "$MODEL_ID" ]; then
     echo "Starting from: $MODEL_ID"
-    uv run python -c "from demo2_ja import finetune; finetune(model_id='${MODEL_ID}', ${WEIGHTS_ARG} unfreeze_decoder=True, use_text_multiturn=True, lr=${LR_VALUE}, max_steps=1000000000, batch_size=2, grad_accumulation=64, warmup_steps=100, val_check_interval=1000, model_dir='models/v2/LlamaForSpeechLM-ja-Instruct-Full-${TIMESTAMP}')"
+    uv run python -c "from speech_llm_ja import finetune; finetune(model_id='${MODEL_ID}', ${WEIGHTS_ARG} unfreeze_decoder=True, use_text_multiturn=True, lr=${LR_VALUE}, max_steps=1000000000, batch_size=2, grad_accumulation=64, warmup_steps=100, val_check_interval=1000, model_dir='models/v2/LlamaForSpeechLM-ja-Instruct-Full-${TIMESTAMP}')"
 elif [ -n "$ENCODER_ID" ]; then
     echo "Creating fresh model with encoder: $ENCODER_ID"
-    uv run python -c "from demo2_ja import finetune; finetune(${ENCODER_ARG} ${WEIGHTS_ARG} unfreeze_decoder=True, use_text_multiturn=True, lr=${LR_VALUE}, max_steps=1000000000, batch_size=2, grad_accumulation=64, warmup_steps=100, val_check_interval=1000, model_dir='models/v2/LlamaForSpeechLM-ja-Instruct-Full-${TIMESTAMP}')"
+    uv run python -c "from speech_llm_ja import finetune; finetune(${ENCODER_ARG} ${WEIGHTS_ARG} unfreeze_decoder=True, use_text_multiturn=True, lr=${LR_VALUE}, max_steps=1000000000, batch_size=2, grad_accumulation=64, warmup_steps=100, val_check_interval=1000, model_dir='models/v2/LlamaForSpeechLM-ja-Instruct-Full-${TIMESTAMP}')"
 else
     echo "Error: MODEL_ID, RESUME_FROM, or ENCODER_ID is required"
     exit 1

@@ -23,7 +23,7 @@ from speech_llm_ja import train
 def main():
     parser = argparse.ArgumentParser(description="Train Speech LLM with multi-GPU support")
     parser.add_argument("--encoder-id", default="openai/whisper-large-v3")
-    parser.add_argument("--decoder-id", default="/groups/gch51701/Team031/model/pretrained/v4-8b-decay2m-ipt_v3.1-instruct4")
+    parser.add_argument("--decoder-id", default="your-decoder-model-path")
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--epoch", type=int, default=5)
