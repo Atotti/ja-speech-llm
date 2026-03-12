@@ -26,5 +26,12 @@ dependencies = [
     "wandb>=0.23.1",
 ]
 
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/speech_llm_ja"]
+
 [tool.uv.sources]
 jiwer = { git = "https://github.com/jitsi/jiwer.git", rev = "c1b0d5e005431f5ce4fa6797f48639a8ccaa5042" }
