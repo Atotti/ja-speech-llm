@@ -6,6 +6,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from transformers import (
+    AutoConfig,
     AutoModelForCausalLM,
     PretrainedConfig,
     PreTrainedModel,
@@ -53,6 +54,7 @@ class LlamaForSpeechLMConfig(PretrainedConfig):
         self,
         encoder_id: str = "openai/whisper-large-v3",
         decoder_id: str = "your-decoder-model-path",
+        decoder_config: dict = None,
         adapter_kernel_size: int = 4,
         adapter_linear_bias: bool = False,
         encoder_type: str = "whisper",  # "whisper", "afwhisper", or "qwen2-audio"
@@ -60,6 +62,7 @@ class LlamaForSpeechLMConfig(PretrainedConfig):
     ):
         self.encoder_id = encoder_id
         self.decoder_id = decoder_id
+        self.decoder_config = decoder_config
         self.adapter_kernel_size = adapter_kernel_size
         self.adapter_linear_bias = adapter_linear_bias
         self.encoder_type = encoder_type
@@ -86,7 +89,15 @@ class LlamaForSpeechLM(PreTrainedModel):
             self.encoder = WhisperForConditionalGeneration.from_pretrained(config.encoder_id).model.encoder
             encoder_hidden_size = self.encoder.config.d_model  # 1280 for whisper-large-v3
 
-        self.decoder = AutoModelForCausalLM.from_pretrained(config.decoder_id, torch_dtype=torch.bfloat16)
+        if config.decoder_config is not None:
+            # Inference mode: create architecture only (weights loaded by from_pretrained)
+            decoder_cfg = AutoConfig.for_model(**config.decoder_config)
+            self.decoder = AutoModelForCausalLM.from_config(decoder_cfg).to(torch.bfloat16)
+        else:
+            # Training mode: load full pretrained decoder
+            self.decoder = AutoModelForCausalLM.from_pretrained(config.decoder_id, torch_dtype=torch.bfloat16)
+            # Save decoder config for future loading without decoder_id
+            config.decoder_config = self.decoder.config.to_dict()
         self.adapter = Adapter(
             encoder_hidden_size,
             self.decoder.config.hidden_size,

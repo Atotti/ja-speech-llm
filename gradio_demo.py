@@ -16,7 +16,6 @@ from speech_llm_ja import LlamaForSpeechLM, LlamaForSpeechLMConfig
 # Configuration
 # =============================================================================
 MODEL_ID = "Atotti/llm-jp-4-8b-speech-chat"
-DECODER_ID = "models/v4-8b-decay2m-ipt_v3.1-instruct4"
 MAX_AUDIO_DURATION = 30.0
 
 # Single-turn用プロンプトテンプレート
@@ -89,7 +88,6 @@ def build_multiturn_prompt(turns, current_instruction, current_has_audio=True):
 print(f"Loading model: {MODEL_ID}")
 
 config = LlamaForSpeechLMConfig.from_pretrained(MODEL_ID)
-config.decoder_id = DECODER_ID
 
 model = LlamaForSpeechLM.from_pretrained(
     MODEL_ID,
@@ -100,7 +98,7 @@ model = LlamaForSpeechLM.from_pretrained(
 ).eval()
 
 encoder_processor = AutoProcessor.from_pretrained(model.config.encoder_id)
-decoder_processor = AutoTokenizer.from_pretrained(DECODER_ID)
+decoder_processor = AutoTokenizer.from_pretrained(MODEL_ID)
 decoder_processor.pad_token = decoder_processor.eos_token
 print("Model loaded successfully!")
 
