@@ -15,7 +15,7 @@ from speech_llm_ja import LlamaForSpeechLM, LlamaForSpeechLMConfig
 # =============================================================================
 # Configuration
 # =============================================================================
-MODEL_ID = "Atotti/llm-jp-4-8b-speech-chat
+MODEL_ID = "Atotti/llm-jp-4-8b-speech-chat"
 DECODER_ID = "models/v4-8b-decay2m-ipt_v3.1-instruct4"
 MAX_AUDIO_DURATION = 30.0
 
