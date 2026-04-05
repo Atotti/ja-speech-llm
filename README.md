@@ -4,8 +4,8 @@
 [![Python](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org)
 
 checkpoints：
-[対話モデル](https://huggingface.co/Atotti/llm-jp-4-8b-speech-chat)
-[音声認識モデル
+[🤗対話モデル](https://huggingface.co/Atotti/llm-jp-4-8b-speech-chat)
+[🤗音声認識モデル
 ](https://huggingface.co/Atotti/llm-jp-4-8b-speech-asr)
 
 日本語音声を理解できる大規模言語モデルの学習パイプライン。
