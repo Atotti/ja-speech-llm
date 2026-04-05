@@ -53,7 +53,7 @@ class LlamaForSpeechLMConfig(PretrainedConfig):
     def __init__(
         self,
         encoder_id: str = "openai/whisper-large-v3",
-        decoder_id: str = "your-decoder-model-path",
+        decoder_id: str = None,
         decoder_config: dict = None,
         adapter_kernel_size: int = 4,
         adapter_linear_bias: bool = False,
@@ -92,7 +92,7 @@ class LlamaForSpeechLM(PreTrainedModel):
         if config.decoder_config is not None:
             # Inference mode: create architecture only (weights loaded by from_pretrained)
             decoder_cfg = AutoConfig.for_model(**config.decoder_config)
-            self.decoder = AutoModelForCausalLM.from_config(decoder_cfg).to(torch.bfloat16)
+            self.decoder = AutoModelForCausalLM.from_config(decoder_cfg)
         else:
             # Training mode: load full pretrained decoder
             self.decoder = AutoModelForCausalLM.from_pretrained(config.decoder_id, torch_dtype=torch.bfloat16)
