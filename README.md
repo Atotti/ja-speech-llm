@@ -4,7 +4,7 @@
 [![Python](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org)
 
 日本語音声を理解できる大規模言語モデルの学習パイプライン。
-frozen Whisper-large-v3 エンコーダと frozen LLM-jp デコーダを、学習可能なアダプタで接続します。
+frozen Whisper-large-v3 エンコーダと LLM-jp デコーダを、学習可能なアダプタで接続します。
 
 ## Architecture
 
@@ -44,8 +44,6 @@ Text Output
 ## Setup
 
 ```bash
-pip install -r requirements.txt
-# or
 uv sync
 ```
 
